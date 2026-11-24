@@ -327,6 +327,31 @@ namespace ONITrainer
             string mixingCsv,
             out string err)
         {
+            return GenerateMapPreviewInternal(clusterFilePath, seed, worldIndex, activeDlcCsv, storyTraitCsv, mixingCsv, false, out err);
+        }
+
+        public MapPreviewData GenerateFastPoiPreview(
+            string clusterFilePath,
+            int seed,
+            int worldIndex,
+            string activeDlcCsv,
+            string storyTraitCsv,
+            string mixingCsv,
+            out string err)
+        {
+            return GenerateMapPreviewInternal(clusterFilePath, seed, worldIndex, activeDlcCsv, storyTraitCsv, mixingCsv, true, out err);
+        }
+
+        MapPreviewData GenerateMapPreviewInternal(
+            string clusterFilePath,
+            int seed,
+            int worldIndex,
+            string activeDlcCsv,
+            string storyTraitCsv,
+            string mixingCsv,
+            bool fastPoi,
+            out string err)
+        {
             err = null;
             if (!EnsureHelperLoaded(out err)) return null;
 
@@ -339,7 +364,7 @@ namespace ONITrainer
             try
             {
                 string req = string.Format(CultureInfo.InvariantCulture,
-                    "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}|{6}",
+                    fastPoi ? "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}|{6}|FASTPOI" : "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}|{6}",
                     clusterFilePath ?? "",
                     seed,
                     worldIndex,
@@ -348,7 +373,7 @@ namespace ONITrainer
                     outPath,
                     mixingCsv ?? "");
 
-                string resp = Cmd(req, 3000, 50000);
+                string resp = Cmd(req, 15000, 50000);
                 if (string.IsNullOrEmpty(resp))
                 {
                     err = "游戏未响应地图预览请求，请重试";

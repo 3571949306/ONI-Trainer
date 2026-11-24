@@ -65,7 +65,7 @@ namespace ONIPreviewHelper
         static FieldInfo s_fGcPresetType, s_fGcPresetMin, s_fGcPresetMax, s_fGcTypesList;
         static FieldInfo s_fGicTypeId, s_fGicRateRoll, s_fGicIterLenRoll, s_fGicIterPctRoll, s_fGicYearLenRoll, s_fGicYearPctRoll;
         static MethodInfo s_mGicInit, s_mGicGetAvg, s_mGicGetEmit, s_mGicGetTemp, s_mGicGetOnDur, s_mGicGetIterLen, s_mGicGetYearOnDur, s_mGicGetYearLen, s_mGicGetType;
-        static FieldInfo s_fGtId, s_fGtIdHash, s_fGtMinRate, s_fGtMaxRate, s_fGtMinIterPct, s_fGtMaxIterPct, s_fGtMinYearPct, s_fGtMaxYearPct;
+        static FieldInfo s_fGtId, s_fGtIdHash, s_fGtMinRate, s_fGtMaxRate, s_fGtMinYearPct, s_fGtMaxYearPct;
         static Type s_tCgs;
         static FieldInfo s_fCgsInstance;
         static MethodInfo s_mCgsGetStoryCode, s_mCgsParseStoryCode, s_mCgsGetMixCode, s_mCgsParseMixCode, s_mCgsGetStories, s_mCgsGetActiveWorldMix;
@@ -76,6 +76,32 @@ namespace ONIPreviewHelper
         static ConstructorInfo s_cTagStr;
         static Type s_tKCrashReporter, s_tDebug;
         static FieldInfo s_fKcrIgnoreAll, s_fDebugLoggingDisabled;
+
+
+        static MethodInfo s_mWgGenLayout, s_mWgDrawWorldBorder, s_mWgPlaceTemplateSpawners;
+        static FieldInfo s_fWgMyRandom, s_fWgPoiBounds, s_fWgClaimedPoiCells;
+        static Type s_tTemplateSpawning, s_tTemplateSpawner, s_tSeededRandom;
+        static MethodInfo s_mTsDetermineTemplates, s_mSimDataInit;
+        static ConstructorInfo s_cSeededRandomInt;
+        static FieldInfo s_fTspPos, s_fTspContainer;
+        static object s_cachedSimData;
+        static int s_cachedSimDataCells;
+
+
+        static bool s_rasterInit;
+        static FieldInfo s_fWgOverworldCells, s_fPolyVerts, s_fVec2X, s_fVec2Y;
+        static PropertyInfo s_pTcPoly, s_pTcNode, s_pNodeType, s_pSubZoneType, s_pPolyBounds, s_pRectXMax, s_pRectYMax;
+        static MethodInfo s_mWgsHasSubworld, s_mWgsGetSubWorld;
+
+
+        sealed class CachedGeyserPool
+        {
+            public List<GeyserPoolEntry> GenericPool;
+            public Dictionary<string, GeyserPoolEntry> AllByPrefab;
+            public Dictionary<string, GeyserPoolEntry> AllByRaw;
+        }
+        static readonly Dictionary<string, CachedGeyserPool> s_geyserPoolCache =
+            new Dictionary<string, CachedGeyserPool>(StringComparer.OrdinalIgnoreCase);
 
 
         static bool s_inSaveResolved;
@@ -273,8 +299,6 @@ namespace ONIPreviewHelper
                         s_fGtIdHash = s_tGeyserType.GetField("idHash", ALL);
                         s_fGtMinRate = s_tGeyserType.GetField("minRatePerCycle", ALL);
                         s_fGtMaxRate = s_tGeyserType.GetField("maxRatePerCycle", ALL);
-                        s_fGtMinIterPct = s_tGeyserType.GetField("minIterationPercent", ALL);
-                        s_fGtMaxIterPct = s_tGeyserType.GetField("maxIterationPercent", ALL);
                         s_fGtMinYearPct = s_tGeyserType.GetField("minYearPercent", ALL);
                         s_fGtMaxYearPct = s_tGeyserType.GetField("maxYearPercent", ALL);
                     }
@@ -311,6 +335,27 @@ namespace ONIPreviewHelper
                 s_tDebug = s_asmFp.GetType("Debug", false);
                 if (s_tDebug != null)
                     s_fDebugLoggingDisabled = s_tDebug.GetField("s_loggingDisabled", ALL);
+
+
+                s_mWgGenLayout = s_tWorldGen.GetMethod("GenerateLayout", ALL);
+                s_mWgDrawWorldBorder = s_tWorldGen.GetMethod("DrawWorldBorder", ALL);
+                s_mWgPlaceTemplateSpawners = s_tWorldGen.GetMethod("PlaceTemplateSpawners", ALL);
+                s_fWgMyRandom = s_tWorldGen.GetField("myRandom", ALL);
+                s_fWgPoiBounds = s_tWorldGen.GetField("POIBounds", ALL);
+                s_fWgClaimedPoiCells = s_tWorldGen.GetField("claimedPOICells", ALL);
+                s_tTemplateSpawning = s_asmCs.GetType("ProcGenGame.TemplateSpawning", false);
+                if (s_tTemplateSpawning != null)
+                    s_mTsDetermineTemplates = s_tTemplateSpawning.GetMethod("DetermineTemplatesForWorld", ALL);
+                s_tTemplateSpawner = s_asmCs.GetType("ProcGenGame.TemplateSpawning+TemplateSpawner", false);
+                if (s_tTemplateSpawner != null)
+                {
+                    s_fTspPos = s_tTemplateSpawner.GetField("position", ALL);
+                    s_fTspContainer = s_tTemplateSpawner.GetField("container", ALL);
+                }
+                s_tSeededRandom = s_asmFp.GetType("SeededRandom", false);
+                if (s_tSeededRandom != null)
+                    s_cSeededRandomInt = s_tSeededRandom.GetConstructor(ALL, null, new Type[] { typeof(int) }, null);
+                s_mSimDataInit = s_tSimData.GetMethod("Init", ALL, null, new Type[] { typeof(int) }, null);
 
                 if (s_progressCb == null)
                 {
@@ -548,6 +593,7 @@ namespace ONIPreviewHelper
             string storyArg = parts[4].Trim();
             string outPath = parts[5].Trim();
             string mixingCode = parts.Length > 6 ? parts[6].Trim() : "";
+            bool fastPoi = parts.Length > 7 && string.Equals(parts[7].Trim(), "FASTPOI", StringComparison.OrdinalIgnoreCase);
             if (string.IsNullOrEmpty(outPath)) return "ERR bad-outpath";
 
             lock (s_lock)
@@ -795,7 +841,8 @@ namespace ONIPreviewHelper
                         s_lastGenError = null;
                         s_mWgInitialise.Invoke(wg, new object[] { s_progressCb, s_errorCb, wSeed, wSeed, wSeed, wSeed, false, false });
 
-                        if (!inSave)
+                        bool useFastPoi = fastPoi && CanRunFastPoi(wg);
+                        if (!inSave && !useFastPoi)
                         {
                             s_mGridReset.Invoke(null, new object[] { sizeX, sizeY });
                         }
@@ -806,6 +853,27 @@ namespace ONIPreviewHelper
                             s_fGridC.SetValue(null, sizeX * sizeY);
                             if (s_fGridWm != null) s_fGridWm.SetValue(null, (float)sizeX);
                             if (s_fGridHm != null) s_fGridHm.SetValue(null, (float)sizeY);
+                        }
+
+                        if (useFastPoi)
+                        {
+                            string fastErr;
+                            int fastBaseX, fastBaseY;
+                            List<PoiOut> fastPois = TryRunFastPoi(wg, sizeX, sizeY, wpX, wpY, wSeed, activeDlcCsv, out fastBaseX, out fastBaseY, out fastErr);
+                            if (fastErr != null)
+                                return fastErr;
+                            if (fastPois != null)
+                            {
+                                sw.Stop();
+                                string fastTraits = FormatTraitsSummary(chosenTraits);
+                                WritePoiOnlyPreview(
+                                    outPath, clusterPath, seed, worldIndex, worldDisplayName,
+                                    sizeX, sizeY, wpX, wpY, fastBaseX, fastBaseY, (int)sw.ElapsedMilliseconds,
+                                    fastTraits, fastPois);
+                                return string.Format(CultureInfo.InvariantCulture,
+                                    "OK fp w:{0} h:{1} pois:{2} ms:{3}", sizeX, sizeY, fastPois.Count, sw.ElapsedMilliseconds);
+                            }
+                            if (!inSave) s_mGridReset.Invoke(null, new object[] { sizeX, sizeY });
                         }
 
                         bool okGen = (bool)s_mWgGenOffline.Invoke(wg, null);
@@ -837,9 +905,8 @@ namespace ONIPreviewHelper
                         object wgData = s_pWgData.GetValue(wg, null);
                         byte[] zoneGrid = RasterizeBiomes(wg, wgData, sizeX, sizeY, wpX, wpY);
 
-                        HashSet<string> activeDlcs = ParseDlcCsv(activeDlcCsv);
                         int baseStartX, baseStartY;
-                        List<PoiOut> pois = ExtractPois(wgData, seed, wpX, wpY, sizeX, sizeY, activeDlcs, out baseStartX, out baseStartY);
+                        List<PoiOut> pois = ExtractPois(wgData, seed, wpX, wpY, sizeX, sizeY, activeDlcCsv, out baseStartX, out baseStartY);
 
                         sw.Stop();
                         string traitsSummary = FormatTraitsSummary(chosenTraits);
@@ -911,6 +978,147 @@ namespace ONIPreviewHelper
                     Thread.CurrentThread.CurrentCulture = prevCulture;
                 }
             }
+        }
+
+        static bool CanRunFastPoi(object wg)
+        {
+            if (wg == null ||
+                s_mWgGenLayout == null || s_mWgPlaceTemplateSpawners == null ||
+                s_fWgMyRandom == null || s_fWgPoiBounds == null || s_fWgClaimedPoiCells == null ||
+                s_mTsDetermineTemplates == null || s_fTspPos == null || s_fTspContainer == null)
+                return false;
+            try
+            {
+                object wgs = s_pWgSettings != null ? s_pWgSettings.GetValue(wg, null) : null;
+                object worldObj = wgs != null ? wgs.GetType().GetProperty("world", ALL).GetValue(wgs, null) : null;
+                if (worldObj != null)
+                {
+                    PropertyInfo pMod = worldObj.GetType().GetProperty("modifyLayoutTags", ALL);
+                    if (pMod != null)
+                    {
+                        IList rules = pMod.GetValue(worldObj, null) as IList;
+                        if (rules != null && rules.Count > 0) return false;
+                    }
+                }
+            }
+            catch { return false; }
+            return true;
+        }
+
+        static List<PoiOut> TryRunFastPoi(
+            object wg, int sizeX, int sizeY, int wpX, int wpY, int wSeed, string activeDlcCsv,
+            out int baseStartX, out int baseStartY, out string err)
+        {
+            baseStartX = sizeX / 2;
+            baseStartY = sizeY / 2;
+            err = null;
+
+            bool okLayout = (bool)s_mWgGenLayout.Invoke(wg, new object[] { s_progressCb });
+            if (!okLayout)
+            {
+                err = "ERR gen-offline:" + SanitizeSingleLine(s_lastGenError ?? "layout-failed");
+                return null;
+            }
+
+            s_mWgFinalizeStart.Invoke(wg, null);
+
+            object wgData = s_pWgData.GetValue(wg, null);
+            object wgSettings = s_pWgSettings.GetValue(wg, null);
+            object poiBounds = s_fWgPoiBounds.GetValue(wg);
+            if (poiBounds == null)
+                poiBounds = Activator.CreateInstance(s_fWgPoiBounds.FieldType);
+
+            bool drawBorder = false;
+            try
+            {
+                MethodInfo mGetBool = wgSettings != null ? wgSettings.GetType().GetMethod("GetBoolSetting", ALL, null, new Type[] { typeof(string) }, null) : null;
+                if (mGetBool != null)
+                    drawBorder = (bool)mGetBool.Invoke(wgSettings, new object[] { "DrawWorldBorder" });
+            }
+            catch { }
+
+            if (drawBorder && s_mWgDrawWorldBorder != null && s_cSeededRandomInt != null && s_mSimDataInit != null)
+            {
+                int total = sizeX * sizeY;
+                if (s_cachedSimData == null || s_cachedSimDataCells != total)
+                {
+                    object sd = Activator.CreateInstance(s_tSimData);
+                    s_mSimDataInit.Invoke(sd, new object[] { total });
+                    s_cachedSimData = sd;
+                    s_cachedSimDataCells = total;
+                }
+                object borderRng = s_cSeededRandomInt.Invoke(new object[] { wSeed });
+                HashSet<int> borderCells = new HashSet<int>();
+                object chunkWorld = wgData.GetType().GetField("world", ALL).GetValue(wgData);
+                object[] bArgs = new object[] { s_cachedSimData, chunkWorld, borderRng, borderCells, poiBounds, s_progressCb };
+                s_mWgDrawWorldBorder.Invoke(wg, bArgs);
+                poiBounds = bArgs[4];
+                s_fWgPoiBounds.SetValue(wg, poiBounds);
+            }
+
+            object spawnData = wgData.GetType().GetField("gameSpawnData", ALL).GetValue(wgData);
+            object worldLayout = wgData.GetType().GetField("worldLayout", ALL).GetValue(wgData);
+            if (spawnData != null && worldLayout != null)
+            {
+                MethodInfo mGetStart = worldLayout.GetType().GetMethod("GetStartLocation", ALL);
+                if (mGetStart != null)
+                {
+                    object startPos = mGetStart.Invoke(worldLayout, null);
+                    FieldInfo fBsp = spawnData.GetType().GetField("baseStartPos", ALL);
+                    if (fBsp != null && startPos != null) fBsp.SetValue(spawnData, startPos);
+                }
+            }
+
+            IList terrainCells = wgData.GetType().GetField("terrainCells", ALL).GetValue(wgData) as IList;
+            object myRandom = s_fWgMyRandom.GetValue(wg);
+            Type tWorldTrait = s_asmFp.GetType("ProcGen.WorldTrait", true);
+            object placedStories = Activator.CreateInstance(typeof(List<>).MakeGenericType(tWorldTrait));
+            object[] tsArgs = new object[] { wgSettings, terrainCells, myRandom, poiBounds, false, placedStories, s_progressCb };
+
+            IList spawners = null;
+            try
+            {
+                spawners = s_mTsDetermineTemplates.Invoke(null, tsArgs) as IList;
+            }
+            catch (Exception ex)
+            {
+                Exception inner = ex;
+                while (inner.InnerException != null) inner = inner.InnerException;
+                string msg = null;
+                try
+                {
+                    FieldInfo fUm = inner.GetType().GetField("userMessage", ALL);
+                    if (fUm != null) msg = fUm.GetValue(inner) as string;
+                }
+                catch { }
+                if (string.IsNullOrEmpty(msg)) msg = inner.Message;
+                err = "ERR render-offline:" + SanitizeSingleLine(msg ?? "template-spawning-failed");
+                return null;
+            }
+
+            poiBounds = tsArgs[3];
+            s_fWgPoiBounds.SetValue(wg, poiBounds);
+
+            if (spawners == null)
+            {
+                err = "ERR render-offline:" + SanitizeSingleLine(s_lastGenError ?? "template-spawning-null");
+                return null;
+            }
+
+            object claimedPoi = s_fWgClaimedPoiCells.GetValue(wg);
+            for (int i = 0; i < spawners.Count; i++)
+            {
+                object sp = spawners[i];
+                object spPos = s_fTspPos.GetValue(sp);
+                object spCont = s_fTspContainer.GetValue(sp);
+                object[] pArgs = new object[] { spPos, spCont, claimedPoi };
+                s_mWgPlaceTemplateSpawners.Invoke(wg, pArgs);
+                claimedPoi = pArgs[2];
+            }
+            s_fWgClaimedPoiCells.SetValue(wg, claimedPoi);
+
+            int seed = wSeed;
+            return ExtractPois(wgData, seed, wpX, wpY, sizeX, sizeY, activeDlcCsv, out baseStartX, out baseStartY);
         }
 
         static string SanitizeSingleLine(string s)
@@ -1046,115 +1254,160 @@ namespace ONIPreviewHelper
             for (int i = 0; i < grid.Length; i++) grid[i] = 255;
             if (wgData == null) return grid;
 
-            IList ovCells = wgData.GetType().GetField("overworldCells", ALL).GetValue(wgData) as IList;
+            if (s_fWgOverworldCells == null)
+                s_fWgOverworldCells = wgData.GetType().GetField("overworldCells", ALL);
+            IList ovCells = s_fWgOverworldCells != null ? (s_fWgOverworldCells.GetValue(wgData) as IList) : null;
             if (ovCells == null || ovCells.Count == 0) return grid;
 
-            Type tTc = ovCells[0].GetType();
-            PropertyInfo pPoly = tTc.GetProperty("poly", ALL);
-            PropertyInfo pNode = tTc.GetProperty("node", ALL);
-            PropertyInfo pNodeType = null;
             object wgSettings = s_pWgSettings != null ? s_pWgSettings.GetValue(wg, null) : null;
-            MethodInfo mHasSubworld = wgSettings != null ? wgSettings.GetType().GetMethod("HasSubworld", ALL, null, new Type[] { typeof(string) }, null) : null;
-            MethodInfo mGetSubWorld = wgSettings != null ? wgSettings.GetType().GetMethod("GetSubWorld", ALL, null, new Type[] { typeof(string) }, null) : null;
-            PropertyInfo pZoneType = null;
-
-            Type tPoly = s_asmFp.GetType("Delaunay.Geo.Polygon", true);
-            FieldInfo fVerts = tPoly.GetField("vertices", ALL);
-            PropertyInfo pBounds = tPoly.GetProperty("bounds", ALL);
-
-            Type tRect = s_asmCore.GetType("UnityEngine.Rect", true);
-            PropertyInfo pXMax = tRect.GetProperty("xMax", ALL);
-            PropertyInfo pYMax = tRect.GetProperty("yMax", ALL);
-
-            Type tVec2 = s_asmCore.GetType("UnityEngine.Vector2", true);
-            FieldInfo fV2x = tVec2.GetField("x", ALL);
-            FieldInfo fV2y = tVec2.GetField("y", ALL);
+            if (!s_rasterInit)
+            {
+                Type tTc = ovCells[0].GetType();
+                s_pTcPoly = tTc.GetProperty("poly", ALL);
+                s_pTcNode = tTc.GetProperty("node", ALL);
+                if (wgSettings != null)
+                {
+                    Type tws = wgSettings.GetType();
+                    s_mWgsHasSubworld = tws.GetMethod("HasSubworld", ALL, null, new Type[] { typeof(string) }, null);
+                    s_mWgsGetSubWorld = tws.GetMethod("GetSubWorld", ALL, null, new Type[] { typeof(string) }, null);
+                }
+                Type tPoly = s_asmFp.GetType("Delaunay.Geo.Polygon", true);
+                s_fPolyVerts = tPoly.GetField("vertices", ALL);
+                s_pPolyBounds = tPoly.GetProperty("bounds", ALL);
+                Type tRect = s_asmCore.GetType("UnityEngine.Rect", true);
+                s_pRectXMax = tRect.GetProperty("xMax", ALL);
+                s_pRectYMax = tRect.GetProperty("yMax", ALL);
+                Type tVec2 = s_asmCore.GetType("UnityEngine.Vector2", true);
+                s_fVec2X = tVec2.GetField("x", ALL);
+                s_fVec2Y = tVec2.GetField("y", ALL);
+                s_rasterInit = true;
+            }
 
             float maxPolyX = 0f, maxPolyY = 0f;
             for (int i = 0; i < ovCells.Count; i++)
             {
-                object poly = pPoly != null ? pPoly.GetValue(ovCells[i], null) : null;
+                object poly = s_pTcPoly != null ? s_pTcPoly.GetValue(ovCells[i], null) : null;
                 if (poly == null) continue;
-                object rect = pBounds.GetValue(poly, null);
-                float xmax = (float)pXMax.GetValue(rect, null);
-                float ymax = (float)pYMax.GetValue(rect, null);
+                object rect = s_pPolyBounds.GetValue(poly, null);
+                float xmax = (float)s_pRectXMax.GetValue(rect, null);
+                float ymax = (float)s_pRectYMax.GetValue(rect, null);
                 if (xmax > maxPolyX) maxPolyX = xmax;
                 if (ymax > maxPolyY) maxPolyY = ymax;
             }
             float offX = (wpX > 0 && maxPolyX > w + 4f) ? (float)wpX : 0f;
             float offY = (wpY > 0 && maxPolyY > h + 4f) ? (float)wpY : 0f;
 
+            float[] vx = new float[64];
+            float[] vy = new float[64];
+            float[] xs = new float[64];
+
             for (int c = 0; c < ovCells.Count; c++)
             {
                 object ov = ovCells[c];
                 byte zone = 255;
-                if (wgSettings != null && mGetSubWorld != null && pNode != null)
+                if (wgSettings != null && s_mWgsGetSubWorld != null && s_pTcNode != null)
                 {
-                    object nodeObj = pNode.GetValue(ov, null);
+                    object nodeObj = s_pTcNode.GetValue(ov, null);
                     if (nodeObj != null)
                     {
-                        if (pNodeType == null) pNodeType = nodeObj.GetType().GetProperty("type", ALL);
-                        string subName = pNodeType != null ? (pNodeType.GetValue(nodeObj, null) as string) : null;
+                        if (s_pNodeType == null) s_pNodeType = nodeObj.GetType().GetProperty("type", ALL);
+                        string subName = s_pNodeType != null ? (s_pNodeType.GetValue(nodeObj, null) as string) : null;
                         if (!string.IsNullOrEmpty(subName) &&
-                            (mHasSubworld == null || (bool)mHasSubworld.Invoke(wgSettings, new object[] { subName })))
+                            (s_mWgsHasSubworld == null || (bool)s_mWgsHasSubworld.Invoke(wgSettings, new object[] { subName })))
                         {
-                            object subWorld = mGetSubWorld.Invoke(wgSettings, new object[] { subName });
+                            object subWorld = s_mWgsGetSubWorld.Invoke(wgSettings, new object[] { subName });
                             if (subWorld != null)
                             {
-                                if (pZoneType == null) pZoneType = subWorld.GetType().GetProperty("zoneType", ALL);
-                                if (pZoneType != null) zone = Convert.ToByte(pZoneType.GetValue(subWorld, null));
+                                if (s_pSubZoneType == null) s_pSubZoneType = subWorld.GetType().GetProperty("zoneType", ALL);
+                                if (s_pSubZoneType != null) zone = Convert.ToByte(s_pSubZoneType.GetValue(subWorld, null));
                             }
                         }
                     }
                 }
-                object poly = pPoly != null ? pPoly.GetValue(ov, null) : null;
+                object poly = s_pTcPoly != null ? s_pTcPoly.GetValue(ov, null) : null;
                 if (poly == null) continue;
 
-                IList verts = fVerts.GetValue(poly) as IList;
+                IList verts = s_fPolyVerts.GetValue(poly) as IList;
                 if (verts == null || verts.Count < 3) continue;
 
                 int vn = verts.Count;
-                float[] vx = new float[vn];
-                float[] vy = new float[vn];
-                float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+                if (vn > vx.Length)
+                {
+                    vx = new float[vn];
+                    vy = new float[vn];
+                    xs = new float[vn];
+                }
+                float minY = float.MaxValue, maxY = float.MinValue;
                 for (int v = 0; v < vn; v++)
                 {
                     object pt = verts[v];
-                    float px = (float)fV2x.GetValue(pt) - offX;
-                    float py = (float)fV2y.GetValue(pt) - offY;
+                    float px = (float)s_fVec2X.GetValue(pt) - offX;
+                    float py = (float)s_fVec2Y.GetValue(pt) - offY;
                     vx[v] = px;
                     vy[v] = py;
-                    if (px < minX) minX = px;
-                    if (px > maxX) maxX = px;
                     if (py < minY) minY = py;
                     if (py > maxY) maxY = py;
                 }
 
-                int x0 = Math.Max(0, (int)Math.Floor(minX));
-                int x1 = Math.Min(w - 1, (int)Math.Ceiling(maxX));
                 int y0 = Math.Max(0, (int)Math.Floor(minY));
                 int y1 = Math.Min(h - 1, (int)Math.Ceiling(maxY));
 
                 for (int y = y0; y <= y1; y++)
                 {
                     float py = y + 0.5f;
-                    int rowOff = y * w;
-                    for (int x = x0; x <= x1; x++)
+                    int nx = 0;
+                    for (int i = 0, j = vn - 1; i < vn; j = i++)
                     {
-                        float px = x + 0.5f;
-                        bool inside = false;
-                        for (int i = 0, j = vn - 1; i < vn; j = i++)
+                        float yi = vy[i], yj = vy[j];
+                        if ((yi > py) != (yj > py))
+                            xs[nx++] = (vx[j] - vx[i]) * (py - yi) / (yj - yi) + vx[i];
+                    }
+                    if (nx < 2) continue;
+                    for (int a = 1; a < nx; a++)
+                    {
+                        float key = xs[a];
+                        int b = a - 1;
+                        while (b >= 0 && xs[b] > key)
                         {
-                            float yi = vy[i], yj = vy[j];
-                            if (((yi > py) != (yj > py)) &&
-                                (px < (vx[j] - vx[i]) * (py - yi) / (yj - yi) + vx[i]))
-                                inside = !inside;
+                            xs[b + 1] = xs[b];
+                            b--;
                         }
-                        if (inside) grid[rowOff + x] = zone;
+                        xs[b + 1] = key;
+                    }
+                    int rowOff = y * w;
+                    for (int m = 0; m + 1 < nx; m += 2)
+                    {
+                        int xStart = Math.Max(0, (int)Math.Ceiling(xs[m] - 0.5f));
+                        int xEnd = Math.Min(w - 1, (int)Math.Floor(xs[m + 1] - 0.5f));
+                        for (int x = xStart; x <= xEnd; x++)
+                            grid[rowOff + x] = zone;
                     }
                 }
             }
             return grid;
+        }
+
+        static CachedGeyserPool GetOrBuildGeyserPool(string activeDlcCsv)
+        {
+            string key = activeDlcCsv ?? "";
+            CachedGeyserPool cached;
+            if (s_geyserPoolCache.TryGetValue(key, out cached))
+                return cached;
+
+            HashSet<string> activeDlcs = ParseDlcCsv(key);
+            List<GeyserPoolEntry> gp;
+            Dictionary<string, GeyserPoolEntry> byPrefab;
+            Dictionary<string, GeyserPoolEntry> byRaw;
+            BuildGeyserPools(activeDlcs, out gp, out byPrefab, out byRaw);
+
+            cached = new CachedGeyserPool
+            {
+                GenericPool = gp,
+                AllByPrefab = byPrefab,
+                AllByRaw = byRaw
+            };
+            s_geyserPoolCache[key] = cached;
+            return cached;
         }
 
         static HashSet<string> ParseDlcCsv(string csv)
@@ -1416,15 +1669,11 @@ namespace ONIPreviewHelper
             {
                 float minRate = (float)s_fGtMinRate.GetValue(gt);
                 float maxRate = (float)s_fGtMaxRate.GetValue(gt);
-                float minIp = (float)s_fGtMinIterPct.GetValue(gt);
-                float maxIp = (float)s_fGtMaxIterPct.GetValue(gt);
                 float minYp = (float)s_fGtMinYearPct.GetValue(gt);
                 float maxYp = (float)s_fGtMaxYearPct.GetValue(gt);
 
                 float loR = minRate + (maxRate - minRate) * pMin;
                 float hiR = minRate + (maxRate - minRate) * pMax;
-                float loIp = minIp + (maxIp - minIp) * pMin;
-                float hiIp = minIp + (maxIp - minIp) * pMax;
                 float loYp = minYp + (maxYp - minYp) * pMin;
                 float hiYp = minYp + (maxYp - minYp) * pMax;
 
@@ -1435,20 +1684,14 @@ namespace ONIPreviewHelper
                 int n = s_quantileSteps.Length;
                 for (int i = 0; i < n; i++)
                 {
-                    float r = loR + (hiR - loR) * s_quantileSteps[i];
+                    float rDiv600 = (loR + (hiR - loR) * s_quantileSteps[i]) / 600f;
                     for (int j = 0; j < n; j++)
                     {
                         float yp = loYp + (hiYp - loYp) * s_quantileSteps[j];
-                        for (int k = 0; k < n; k++)
-                        {
-
-                            float ip = loIp + (hiIp - loIp) * s_quantileSteps[k];
-                            float sampleAvg = (ip >= 0f ? (r / 600f) * yp : 0f);
-                            if (sampleAvg <= avgKgS + 1e-6f) below++;
-                        }
+                        if (rDiv600 * yp <= avgKgS + 1e-6f) below++;
                     }
                 }
-                return (below * 100f) / (n * n * n);
+                return (below * 100f) / (n * n);
             }
             catch
             {
@@ -1458,7 +1701,7 @@ namespace ONIPreviewHelper
 
         static List<PoiOut> ExtractPois(
             object wgData, int seed, int wpX, int wpY, int w, int h,
-            HashSet<string> activeDlcs, out int baseStartX, out int baseStartY)
+            string activeDlcCsv, out int baseStartX, out int baseStartY)
         {
             baseStartX = w / 2;
             baseStartY = h / 2;
@@ -1477,10 +1720,10 @@ namespace ONIPreviewHelper
                 baseStartY = (int)s_fV2iy.GetValue(startPosObj);
             }
 
-            List<GeyserPoolEntry> geyserPool;
-            Dictionary<string, GeyserPoolEntry> allByPrefab;
-            Dictionary<string, GeyserPoolEntry> allByRaw;
-            BuildGeyserPools(activeDlcs, out geyserPool, out allByPrefab, out allByRaw);
+            CachedGeyserPool pool = GetOrBuildGeyserPool(activeDlcCsv);
+            List<GeyserPoolEntry> geyserPool = pool.GenericPool;
+            Dictionary<string, GeyserPoolEntry> allByPrefab = pool.AllByPrefab;
+            Dictionary<string, GeyserPoolEntry> allByRaw = pool.AllByRaw;
 
             Dictionary<string, string> geyserNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < geyserPool.Count; i++)
@@ -1844,32 +2087,81 @@ namespace ONIPreviewHelper
                 for (int i = 0; i < total; i++) bw.Write(outTemp[i]);
                 bw.Write(zoneGrid, 0, total);
 
-                bw.Write(pois.Count);
-                for (int i = 0; i < pois.Count; i++)
-                {
-                    PoiOut p = pois[i];
-                    bw.Write(p.PrefabId ?? "");
-                    bw.Write(p.Category ?? "");
-                    bw.Write(p.DisplayName ?? "");
-                    bw.Write(p.X);
-                    bw.Write(p.Y);
-                    bw.Write(p.IsRandomGeyser);
-
-                    bw.Write(p.HasGeyserStats);
-                    bw.Write(p.AvgYieldGps);
-                    bw.Write(p.EruptRateGps);
-                    bw.Write(p.OutputTempC);
-                    bw.Write(p.EruptSec);
-                    bw.Write(p.IdleSec);
-                    bw.Write(p.ActiveCycles);
-                    bw.Write(p.DormantCycles);
-                    bw.Write(p.Grade);
-                    bw.Write(p.Percentile);
-                }
+                WritePoiList(bw, pois);
             }
 
             if (File.Exists(outPath)) File.Delete(outPath);
             File.Move(tmpPath, outPath);
+        }
+
+        static void WritePoiOnlyPreview(
+            string outPath,
+            string clusterPath,
+            int seed,
+            int worldIndex,
+            string worldName,
+            int width,
+            int height,
+            int wpX,
+            int wpY,
+            int baseStartX,
+            int baseStartY,
+            int elapsedMs,
+            string traitsSummary,
+            List<PoiOut> pois)
+        {
+            string dir = Path.GetDirectoryName(outPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            string tmpPath = outPath + ".tmp";
+
+            using (FileStream fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (BinaryWriter bw = new BinaryWriter(fs, Encoding.UTF8))
+            {
+                bw.Write((byte)'O'); bw.Write((byte)'N'); bw.Write((byte)'I'); bw.Write((byte)'P');
+                bw.Write(3);
+                bw.Write(clusterPath ?? "");
+                bw.Write(seed);
+                bw.Write(worldIndex);
+                bw.Write(worldName ?? "");
+                bw.Write(width);
+                bw.Write(height);
+                bw.Write(wpX);
+                bw.Write(wpY);
+                bw.Write(baseStartX);
+                bw.Write(baseStartY);
+                bw.Write(elapsedMs);
+                bw.Write(traitsSummary ?? "");
+                WritePoiList(bw, pois);
+            }
+
+            if (File.Exists(outPath)) File.Delete(outPath);
+            File.Move(tmpPath, outPath);
+        }
+
+        static void WritePoiList(BinaryWriter bw, List<PoiOut> pois)
+        {
+            bw.Write(pois.Count);
+            for (int i = 0; i < pois.Count; i++)
+            {
+                PoiOut p = pois[i];
+                bw.Write(p.PrefabId ?? "");
+                bw.Write(p.Category ?? "");
+                bw.Write(p.DisplayName ?? "");
+                bw.Write(p.X);
+                bw.Write(p.Y);
+                bw.Write(p.IsRandomGeyser);
+                bw.Write(p.HasGeyserStats);
+                bw.Write(p.AvgYieldGps);
+                bw.Write(p.EruptRateGps);
+                bw.Write(p.OutputTempC);
+                bw.Write(p.EruptSec);
+                bw.Write(p.IdleSec);
+                bw.Write(p.ActiveCycles);
+                bw.Write(p.DormantCycles);
+                bw.Write(p.Grade);
+                bw.Write(p.Percentile);
+            }
         }
 
 

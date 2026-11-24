@@ -152,6 +152,7 @@ namespace ONITrainer
         public int BaseStartY;
         public int ElapsedMs;
         public string TraitsSummary;
+        public bool IsPoiOnly;
 
         public MapElementDef[] Elements;
         public ushort[] ElemIdx;
@@ -386,10 +387,11 @@ namespace ONITrainer
                 if (magic.Length != 4 || magic[0] != 'O' || magic[1] != 'N' || magic[2] != 'I' || magic[3] != 'P')
                     throw new InvalidDataException("无效的地图预览数据格式");
                 int ver = br.ReadInt32();
-                if (ver != 1 && ver != 2)
+                if (ver != 1 && ver != 2 && ver != 3)
                     throw new InvalidDataException("不支持的预览数据版本：" + ver);
 
                 MapPreviewData d = new MapPreviewData();
+                d.IsPoiOnly = (ver == 3);
                 d.ClusterFilePath = br.ReadString();
                 d.Seed = br.ReadInt32();
                 d.WorldIndex = br.ReadInt32();
@@ -403,26 +405,33 @@ namespace ONITrainer
                 d.ElapsedMs = br.ReadInt32();
                 d.TraitsSummary = br.ReadString();
 
-                int elemCount = br.ReadInt32();
-                d.Elements = new MapElementDef[elemCount];
-                for (int i = 0; i < elemCount; i++)
+                if (ver == 3)
                 {
-                    d.Elements[i] = new MapElementDef
-                    {
-                        R = br.ReadByte(),
-                        G = br.ReadByte(),
-                        B = br.ReadByte(),
-                        State = br.ReadByte(),
-                        Name = br.ReadString()
-                    };
+                    d.Elements = new MapElementDef[0];
                 }
+                else
+                {
+                    int elemCount = br.ReadInt32();
+                    d.Elements = new MapElementDef[elemCount];
+                    for (int i = 0; i < elemCount; i++)
+                    {
+                        d.Elements[i] = new MapElementDef
+                        {
+                            R = br.ReadByte(),
+                            G = br.ReadByte(),
+                            B = br.ReadByte(),
+                            State = br.ReadByte(),
+                            Name = br.ReadString()
+                        };
+                    }
 
-                int total = d.Width * d.Height;
-                d.ElemIdx = new ushort[total];
-                d.TempDeciC = new short[total];
-                for (int i = 0; i < total; i++) d.ElemIdx[i] = br.ReadUInt16();
-                for (int i = 0; i < total; i++) d.TempDeciC[i] = br.ReadInt16();
-                d.ZoneType = br.ReadBytes(total);
+                    int total = d.Width * d.Height;
+                    d.ElemIdx = new ushort[total];
+                    d.TempDeciC = new short[total];
+                    for (int i = 0; i < total; i++) d.ElemIdx[i] = br.ReadUInt16();
+                    for (int i = 0; i < total; i++) d.TempDeciC[i] = br.ReadInt16();
+                    d.ZoneType = br.ReadBytes(total);
+                }
 
                 int poiCount = br.ReadInt32();
                 for (int i = 0; i < poiCount; i++)
@@ -645,6 +654,8 @@ namespace ONITrainer
 
         public Bitmap RenderBitmap(MapRenderMode mode)
         {
+            if (IsPoiOnly || ElemIdx == null || Elements == null || Elements.Length == 0)
+                throw new InvalidOperationException("当前数据仅含间歇泉快速筛查结果，不包含地形体素数据。");
             int w = Width, h = Height;
             Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);

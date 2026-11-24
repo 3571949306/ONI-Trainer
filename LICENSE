@@ -1,4 +1,30 @@
-Attribution-NonCommercial 4.0 International
+补充条款（中国用户附加约定）
+
+本项目在 CC BY-NC-SA 4.0 协议基础上，追加以下条款。若本补充条款与 CC BY-NC-SA 4.0 正文冲突，以本补充条款为准。
+
+一、署名与来源
+1. 传播、分享或基于本项目进行修改时，必须清晰保留原作者署名、项目名称与原始仓库地址（https://github.com/3571949306/ONI-Trainer）。
+2. 不得以任何方式移除、遮挡或改写上述署名与来源信息，也不得声称本项目或衍生作品为本人原创。
+
+二、相同方式共享（ShareAlike）
+1. 任何基于本项目的修改、二次创作或衍生作品，必须以 CC BY-NC-SA 4.0（或兼容的同版本协议）发布，并保留本补充条款。
+2. 不得以其他开源协议或自有协议重新授权、再次发布衍生作品，也不得将其作为其他项目的一部分整体分发。
+
+三、禁止的用途
+1. 禁止将本项目或其任何部分用于商业目的。商业目的包括但不限于：出售、出租、租赁、以任何形式收费提供（含付费下载页、付费群、付费教程附带、打赏换取）、在企业或组织内部商用环境中部署或使用、用于商业宣传或为客户服务。
+2. 禁止将本项目的代码、文档、界面、配置或数据用于训练、微调或评估任何人工智能模型，亦不得以爬虫或其他自动化方式批量抓取本项目内容用于上述用途。
+
+四、非商业传播的边界
+1. 允许个人在非商业前提下自由传播、分享、修改本项目，但须遵守上述署名、相同方式共享与禁止用途条款。
+2. 允许在非商业社区、论坛、网盘或社交平台分享原样副本，但不得夹带广告、捆绑软件或任何收费入口。
+
+五、责任与免责
+1. 本项目按“现状”提供，不提供任何明示或默示担保。使用者自行承担使用风险，并应在修改游戏存档前自行备份。
+2. 本项目仅供单机自用，不得用于联机、共享存档或规避付费服务。
+
+=======================================================================
+
+Attribution-NonCommercial-ShareAlike 4.0 International
 
 =======================================================================
 
@@ -54,18 +80,18 @@ exhaustive, and do not form part of our licenses.
 
 =======================================================================
 
-Creative Commons Attribution-NonCommercial 4.0 International Public
-License
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+Public License
 
 By exercising the Licensed Rights (defined below), You accept and agree
 to be bound by the terms and conditions of this Creative Commons
-Attribution-NonCommercial 4.0 International Public License ("Public
-License"). To the extent this Public License may be interpreted as a
-contract, You are granted the Licensed Rights in consideration of Your
-acceptance of these terms and conditions, and the Licensor grants You
-such rights in consideration of benefits the Licensor receives from
-making the Licensed Material available under these terms and
-conditions.
+Attribution-NonCommercial-ShareAlike 4.0 International Public License
+("Public License"). To the extent this Public License may be
+interpreted as a contract, You are granted the Licensed Rights in
+consideration of Your acceptance of these terms and conditions, and the
+Licensor grants You such rights in consideration of benefits the
+Licensor receives from making the Licensed Material available under
+these terms and conditions.
 
 
 Section 1 -- Definitions.
@@ -84,36 +110,45 @@ Section 1 -- Definitions.
      and Similar Rights in Your contributions to Adapted Material in
      accordance with the terms and conditions of this Public License.
 
-  c. Copyright and Similar Rights means copyright and/or similar rights
+  c. BY-NC-SA Compatible License means a license listed at
+     creativecommons.org/compatiblelicenses, approved by Creative
+     Commons as essentially the equivalent of this Public License.
+
+  d. Copyright and Similar Rights means copyright and/or similar rights
      closely related to copyright including, without limitation,
      performance, broadcast, sound recording, and Sui Generis Database
      Rights, without regard to how the rights are labeled or
      categorized. For purposes of this Public License, the rights
      specified in Section 2(b)(1)-(2) are not Copyright and Similar
      Rights.
-  d. Effective Technological Measures means those measures that, in the
+
+  e. Effective Technological Measures means those measures that, in the
      absence of proper authority, may not be circumvented under laws
      fulfilling obligations under Article 11 of the WIPO Copyright
      Treaty adopted on December 20, 1996, and/or similar international
      agreements.
 
-  e. Exceptions and Limitations means fair use, fair dealing, and/or
+  f. Exceptions and Limitations means fair use, fair dealing, and/or
      any other exception or limitation to Copyright and Similar Rights
      that applies to Your use of the Licensed Material.
 
-  f. Licensed Material means the artistic or literary work, database,
+  g. License Elements means the license attributes listed in the name
+     of a Creative Commons Public License. The License Elements of this
+     Public License are Attribution, NonCommercial, and ShareAlike.
+
+  h. Licensed Material means the artistic or literary work, database,
      or other material to which the Licensor applied this Public
      License.
 
-  g. Licensed Rights means the rights granted to You subject to the
+  i. Licensed Rights means the rights granted to You subject to the
      terms and conditions of this Public License, which are limited to
      all Copyright and Similar Rights that apply to Your use of the
      Licensed Material and that the Licensor has authority to license.
 
-  h. Licensor means the individual(s) or entity(ies) granting rights
+  j. Licensor means the individual(s) or entity(ies) granting rights
      under this Public License.
 
-  i. NonCommercial means not primarily intended for or directed towards
+  k. NonCommercial means not primarily intended for or directed towards
      commercial advantage or monetary compensation. For purposes of
      this Public License, the exchange of the Licensed Material for
      other material subject to Copyright and Similar Rights by digital
@@ -121,7 +156,7 @@ Section 1 -- Definitions.
      no payment of monetary compensation in connection with the
      exchange.
 
-  j. Share means to provide material to the public by any means or
+  l. Share means to provide material to the public by any means or
      process that requires permission under the Licensed Rights, such
      as reproduction, public display, public performance, distribution,
      dissemination, communication, or importation, and to make material
@@ -129,13 +164,13 @@ Section 1 -- Definitions.
      public may access the material from a place and at a time
      individually chosen by them.
 
-  k. Sui Generis Database Rights means rights other than copyright
+  m. Sui Generis Database Rights means rights other than copyright
      resulting from Directive 96/9/EC of the European Parliament and of
      the Council of 11 March 1996 on the legal protection of databases,
      as amended and/or succeeded, as well as other essentially
      equivalent rights anywhere in the world.
 
-  l. You means the individual or entity exercising the Licensed Rights
+  n. You means the individual or entity exercising the Licensed Rights
      under this Public License. Your has a corresponding meaning.
 
 
@@ -182,7 +217,13 @@ Section 2 -- Scope.
                Licensed Rights under the terms and conditions of this
                Public License.
 
-            b. No downstream restrictions. You may not offer or impose
+            b. Additional offer from the Licensor -- Adapted Material.
+               Every recipient of Adapted Material from You
+               automatically receives an offer from the Licensor to
+               exercise the Licensed Rights in the Adapted Material
+               under the conditions of the Adapter's License You apply.
+
+            c. No downstream restrictions. You may not offer or impose
                any additional or different terms or conditions on, or
                apply any Effective Technological Measures to, the
                Licensed Material if doing so restricts exercise of the
@@ -261,14 +302,28 @@ following conditions.
           reasonable to satisfy the conditions by providing a URI or
           hyperlink to a resource that includes the required
           information.
-
        3. If requested by the Licensor, You must remove any of the
           information required by Section 3(a)(1)(A) to the extent
           reasonably practicable.
 
-       4. If You Share Adapted Material You produce, the Adapter's
-          License You apply must not prevent recipients of the Adapted
-          Material from complying with this Public License.
+  b. ShareAlike.
+
+     In addition to the conditions in Section 3(a), if You Share
+     Adapted Material You produce, the following conditions also apply.
+
+       1. The Adapter's License You apply must be a Creative Commons
+          license with the same License Elements, this version or
+          later, or a BY-NC-SA Compatible License.
+
+       2. You must include the text of, or the URI or hyperlink to, the
+          Adapter's License You apply. You may satisfy this condition
+          in any reasonable manner based on the medium, means, and
+          context in which You Share Adapted Material.
+
+       3. You may not offer or impose any additional or different terms
+          or conditions on, or apply any Effective Technological
+          Measures to, Adapted Material that restrict exercise of the
+          rights granted under the Adapter's License You apply.
 
 
 Section 4 -- Sui Generis Database Rights.
@@ -284,7 +339,8 @@ apply to Your use of the Licensed Material:
   b. if You include all or a substantial portion of the database
      contents in a database in which You have Sui Generis Database
      Rights, then the database in which You have Sui Generis Database
-     Rights (but not its individual contents) is Adapted Material; and
+     Rights (but not its individual contents) is Adapted Material,
+     including for purposes of Section 3(b); and
 
   c. You must comply with the conditions in Section 3(a) if You Share
      all or a substantial portion of the contents of the database.

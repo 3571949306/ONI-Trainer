@@ -1261,12 +1261,16 @@ namespace ONITrainer
                     {
                         if (_searchCtrl == ctrl && !ctrl.Stop)
                         {
+                            double sec = sw.Elapsed.TotalSeconds;
+                            string rateNote = (sec > 0.25 && mapsTested > 0)
+                                ? string.Format(" ({0:0.0} 星/s)", mapsTested / sec)
+                                : "";
                             string skipNote = badSeedsSkipped > 0
                                 ? string.Format(" · 已跳过 {0} 坏种子", badSeedsSkipped)
                                 : "";
                             _lblSearchStatus.Text = string.Format(
-                                "高级筛选中（地图验证 #{0}）… 特质已检 {1:N0} · 地图已验 {2} 次{3} · 耗时 {4:0.0}s",
-                                candidateSeed, totalTraitTested, mapsTested, skipNote, sw.Elapsed.TotalSeconds);
+                                "极速筛选中（验证 #{0}）… 特质已检 {1:N0} · 地图已验 {2} 次{3}{4} · 耗时 {5:0.0}s",
+                                candidateSeed, totalTraitTested, mapsTested, rateNote, skipNote, sec);
                             _lblSearchStatus.ForeColor = C(WARN);
                         }
                     });
@@ -1278,14 +1282,28 @@ namespace ONITrainer
                         break;
                     }
 
-                    bool allOk = true;
-                    Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
-                    foreach (KeyValuePair<int, List<PoiFilterRule>> kv in grouped)
+
+                    List<KeyValuePair<int, List<PoiFilterRule>>> orderedGroups =
+                        new List<KeyValuePair<int, List<PoiFilterRule>>>(grouped);
+                    orderedGroups.Sort((a, b) =>
                     {
+                        int c = b.Value.Count.CompareTo(a.Value.Count);
+                        if (c != 0) return c;
+                        int aStart = (a.Key == cluster.StartWorldIndex) ? 0 : 1;
+                        int bStart = (b.Key == cluster.StartWorldIndex) ? 0 : 1;
+                        c = aStart.CompareTo(bStart);
+                        return c != 0 ? c : a.Key.CompareTo(b.Key);
+                    });
+
+                    bool allOk = true;
+                    string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
+                    Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
+                    for (int gi = 0; gi < orderedGroups.Count; gi++)
+                    {
+                        KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
                         if (ctrl.Stop) { allOk = false; break; }
                         string err;
-                        string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
-                        MapPreviewData mapData = st.Bridge.GenerateMapPreview(
+                        MapPreviewData mapData = st.Bridge.GenerateFastPoiPreview(
                             cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, _mixingCode, out err);
                         mapsTested++;
                         if (mapData == null)
@@ -1319,6 +1337,47 @@ namespace ONITrainer
                         {
                             allOk = false;
                             break;
+                        }
+                    }
+
+
+                    if (allOk && !ctrl.Stop && abortErr == null)
+                    {
+                        for (int gi = 0; gi < orderedGroups.Count; gi++)
+                        {
+                            if (ctrl.Stop) { allOk = false; break; }
+                            KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                            MapPreviewData curMd;
+                            if (curMaps.TryGetValue(kv.Key, out curMd) && curMd != null && !curMd.IsPoiOnly)
+                                continue;
+                            string fullErr;
+                            MapPreviewData fullData = st.Bridge.GenerateMapPreview(
+                                cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, _mixingCode, out fullErr);
+                            if (fullData == null)
+                            {
+                                if (IsBadSeedPreviewError(fullErr))
+                                {
+                                    if (cluster.FixedCoordinate > 0)
+                                    {
+                                        abortErr = cluster.DisplayName + " 为固定种子，且游戏无法生成该世界：" + fullErr;
+                                        allOk = false;
+                                        break;
+                                    }
+                                    badSeedsSkipped++;
+                                    consecutiveGenFails++;
+                                    allOk = false;
+                                    break;
+                                }
+                                abortErr = fullErr ?? "完整地图验证失败";
+                                allOk = false;
+                                break;
+                            }
+                            curMaps[kv.Key] = fullData;
+                            if (!fullData.MatchesAllRules(kv.Value))
+                            {
+                                allOk = false;
+                                break;
+                            }
                         }
                     }
 

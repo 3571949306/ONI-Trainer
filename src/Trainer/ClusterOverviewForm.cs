@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
@@ -323,6 +324,7 @@ namespace ONITrainer
                     int done = 0;
                     int failed = 0;
                     int total = _orderedPlacements.Count;
+                    string lastErr = null;
                     try
                     {
                         for (int i = 0; i < total; i++)
@@ -336,7 +338,7 @@ namespace ONITrainer
                             if (data == null)
                             {
                                 BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                                if (st == null || st.Bridge == null) break;
+                                if (st == null || st.Bridge == null) { lastErr = "游戏连接已断开"; break; }
 
                                 SetUi(() =>
                                 {
@@ -346,12 +348,20 @@ namespace ONITrainer
                                     _lblStatus.ForeColor = C(WARN);
                                 });
 
-                                string err;
-                                data = st.Bridge.GenerateMapPreview(
-                                    _cluster.FilePath, _seed, wp.PlacementIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                                string err = null;
+                                for (int attempt = 0; attempt < 3; attempt++)
+                                {
+                                    if (_closing || _stopReq) break;
+                                    data = st.Bridge.GenerateMapPreview(
+                                        _cluster.FilePath, _seed, wp.PlacementIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                                    if (data != null) break;
+                                    if (err == null || err.IndexOf("busy", StringComparison.OrdinalIgnoreCase) < 0) break;
+                                    Thread.Sleep(450);
+                                }
                                 if (data == null)
                                 {
                                     failed++;
+                                    if (!string.IsNullOrEmpty(err)) lastErr = err;
                                     SetUi(() => { if (rowIdx < _lv.Items.Count) _lv.Items[rowIdx].SubItems[3].Text = "失败"; });
                                     continue;
                                 }
@@ -384,18 +394,35 @@ namespace ONITrainer
                             return;
                         }
 
-                        SetUi(() =>
-                        {
-                            _lblStatus.Text = "正在合成全星群高清大图，请稍候…";
-                            _lblStatus.ForeColor = C(WARN);
-                        });
-
                         Dictionary<int, MapPreviewData> snap = new Dictionary<int, MapPreviewData>();
                         lock (_sharedCache)
                         {
                             foreach (KeyValuePair<int, MapPreviewData> kv in _sharedCache)
                                 if (kv.Value != null) snap[kv.Key] = kv.Value;
                         }
+
+                        if (snap.Count == 0)
+                        {
+                            SetUi(() =>
+                            {
+                                _exportingAll = false;
+                                _btnRescan.Enabled = true;
+                                if (_btnExportAll != null) _btnExportAll.Enabled = true;
+                                _btnStop.Enabled = false;
+                                _lblStatus.Text = "全星群扫描失败，未能生成任何地图";
+                                _lblStatus.ForeColor = C(WARN);
+                                MessageBox.Show(this,
+                                    "未能成功生成任何小行星地图，无法导出大图：\r\n" + (lastErr ?? "请确认游戏已连接。"),
+                                    "导出失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            });
+                            return;
+                        }
+
+                        SetUi(() =>
+                        {
+                            _lblStatus.Text = "正在合成全星群高清大图，请稍候…";
+                            _lblStatus.ForeColor = C(WARN);
+                        });
 
                         int imgW, imgH;
                         using (Bitmap big = MapPreviewForm.RenderCombinedClusterBitmap(
@@ -415,6 +442,15 @@ namespace ONITrainer
                             string warnNote = failed > 0 ? string.Format("（{0} 颗未成功生成）", failed) : "";
                             _lblStatus.Text = string.Format("已导出全星群大图 ({0}×{1})：{2}{3}", imgW, imgH, outPath, warnNote);
                             _lblStatus.ForeColor = C(ACC);
+                            DialogResult openRes = MessageBox.Show(this,
+                                string.Format(
+                                    "全星群高清大图已导出完成！\r\n包含 {0}/{1} 颗小行星{2}，分辨率 {3}×{4}。\r\n保存位置：{5}\r\n\r\n是否立即打开文件所在文件夹？",
+                                    snap.Count, total, warnNote, imgW, imgH, outPath),
+                                "导出全星群完成", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                            if (openRes == DialogResult.Yes)
+                            {
+                                try { Process.Start("explorer.exe", "/select,\"" + outPath + "\""); } catch { }
+                            }
                         });
                     }
                     catch (Exception ex)
