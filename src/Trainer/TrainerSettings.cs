@@ -21,6 +21,7 @@ namespace ONITrainer
         static bool _showInGameToast = true;
         static bool _autoBackupSave = true;
         static bool _autoCheckUpdate;
+        static string _lastSeedCoord = "";
 
         public static bool AdvancedMode { get { EnsureLoaded(); return _advancedMode; } }
         public static bool EnableHotkeys { get { EnsureLoaded(); return _enableHotkeys; } }
@@ -33,6 +34,7 @@ namespace ONITrainer
         public static bool ShowInGameToast { get { EnsureLoaded(); return _showInGameToast; } }
         public static bool AutoBackupSave { get { EnsureLoaded(); return _autoBackupSave; } }
         public static bool AutoCheckUpdate { get { EnsureLoaded(); return _autoCheckUpdate; } }
+        public static string LastSeedCoord { get { EnsureLoaded(); return _lastSeedCoord; } }
 
         public static event Action AdvancedModeChanged;
         public static event Action SettingsChanged;
@@ -103,6 +105,8 @@ namespace ONITrainer
                             _autoBackupSave = ParseBool(v, true);
                         else if (string.Equals(k, "AutoCheckUpdate", StringComparison.OrdinalIgnoreCase))
                             _autoCheckUpdate = ParseBool(v, false);
+                        else if (string.Equals(k, "LastSeedCoord", StringComparison.OrdinalIgnoreCase))
+                            _lastSeedCoord = v ?? "";
                     }
                 }
                 catch { }
@@ -122,6 +126,7 @@ namespace ONITrainer
             _showInGameToast = true;
             _autoBackupSave = true;
             _autoCheckUpdate = false;
+            _lastSeedCoord = "";
         }
 
         static bool ParseBool(string v, bool defVal)
@@ -144,6 +149,23 @@ namespace ONITrainer
         static void EnsureLoaded()
         {
             if (!_loaded) Load();
+        }
+
+        public static void SetLastSeedCoord(string coord)
+        {
+            string clean = (coord ?? "").Trim();
+            bool changed;
+            lock (_lock)
+            {
+                EnsureLoaded();
+                changed = !string.Equals(_lastSeedCoord, clean, StringComparison.Ordinal);
+                if (changed)
+                {
+                    _lastSeedCoord = clean;
+                    SaveInternal();
+                }
+            }
+            if (changed) RaiseEvent(SettingsChanged);
         }
 
         public static void SetAdvancedMode(bool enabled)
@@ -228,6 +250,7 @@ namespace ONITrainer
                 sb.AppendLine("ShowInGameToast=" + (_showInGameToast ? "1" : "0"));
                 sb.AppendLine("AutoBackupSave=" + (_autoBackupSave ? "1" : "0"));
                 sb.AppendLine("AutoCheckUpdate=" + (_autoCheckUpdate ? "1" : "0"));
+                sb.AppendLine("LastSeedCoord=" + (_lastSeedCoord ?? ""));
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
             catch { }

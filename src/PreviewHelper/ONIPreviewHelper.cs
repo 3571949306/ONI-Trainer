@@ -74,20 +74,25 @@ namespace ONIPreviewHelper
         static Type s_tAssets, s_tTag, s_tHashedString;
         static MethodInfo s_mAssetsGetPrefab;
         static ConstructorInfo s_cTagStr;
+        static Type s_tKCrashReporter, s_tDebug;
+        static FieldInfo s_fKcrIgnoreAll, s_fDebugLoggingDisabled;
 
 
         static bool s_inSaveResolved;
         static Type s_tComponents, s_tStudyable, s_tModifiers, s_tAmounts, s_tAttrLevels, s_tTraits;
         static Type s_tAttrMod, s_tPopFX, s_tPlayerCtrl, s_tSimMessages, s_tSaveLoader, s_tUnityObj, s_tSimHashes;
         static FieldInfo s_fCompLiveMinions, s_fCompGeysers, s_fGeyserStudyable;
-        static FieldInfo s_fStudyStudied, s_fStudyMarked, s_fModAmounts, s_fModAttrs, s_fTraitList, s_fTraitPositive, s_fAttrModDesc;
+        static FieldInfo s_fStudyStudied, s_fStudyMarked, s_fModAmounts, s_fModAttrs;
+        static FieldInfo s_fTraitList, s_fTraitPositive, s_fAttrModDesc, s_fTraitDesc, s_fDbTraits;
         static FieldInfo s_fPopInst, s_fPopReady, s_fPopSpritePlus, s_fPcInst;
         static PropertyInfo s_pSaveLoaderInst;
         static MethodInfo s_mSaveGetPath, s_mStudyCancel, s_mStudyRefresh, s_mStudyTrigger;
         static MethodInfo s_mGetComponent, s_mAmountsGet, s_mAmtGetMax, s_mAmtSetVal;
         static MethodInfo s_mAttrsGet, s_mAttrInstAdd, s_mAttrInstRemove, s_mAttrLevelGet, s_mAttrLevelSet;
         static FieldInfo s_fAttrInstMods, s_fAttrLevelVal;
-        static MethodInfo s_mTraitsRemove, s_mTraitGetName, s_mPcGetCursor, s_mPopSpawnFx, s_mSimReplaceElem, s_mUnityFindObjects;
+        static MethodInfo s_mTraitsRemove, s_mTraitsAdd, s_mTraitsHasStr, s_mTraitGetName, s_mTraitGetTooltip;
+        static MethodInfo s_mDbGet, s_mResTryGet, s_mPcGetCursor, s_mPopSpawnFx, s_mSimReplaceElem, s_mUnityFindObjects;
+        static Type s_tDb, s_tDupStats;
         static ConstructorInfo s_cAttrMod6;
         static object s_simVacuumEnum;
         static Type s_tVec3;
@@ -105,7 +110,7 @@ namespace ONIPreviewHelper
         static readonly string[] s_dupeAttrIds = new string[]
         {
             "Construction", "Digging", "Machinery", "Athletics", "Learning",
-            "Cooking", "Caring", "Strength", "Art", "Botanist", "Ranching"
+            "Cooking", "Caring", "Strength", "Art", "Botanist", "Ranching", "SpaceNavigation"
         };
 
         static readonly string[] s_workAttrIds = new string[]
@@ -299,6 +304,13 @@ namespace ONIPreviewHelper
                     s_cTagStr = s_tTag.GetConstructor(ALL, null, new Type[] { typeof(string) }, null);
                     s_mAssetsGetPrefab = s_tAssets.GetMethod("GetPrefab", ALL, null, new Type[] { s_tTag }, null);
                 }
+
+                s_tKCrashReporter = s_asmCs.GetType("KCrashReporter", false);
+                if (s_tKCrashReporter != null)
+                    s_fKcrIgnoreAll = s_tKCrashReporter.GetField("ignoreAll", ALL);
+                s_tDebug = s_asmFp.GetType("Debug", false);
+                if (s_tDebug != null)
+                    s_fDebugLoggingDisabled = s_tDebug.GetField("s_loggingDisabled", ALL);
 
                 if (s_progressCb == null)
                 {
@@ -552,8 +564,7 @@ namespace ONIPreviewHelper
                     string initErr;
                     if (!InitReflection(out initErr)) return "ERR " + initErr;
 
-                    if (s_fWorldInst != null && s_fWorldInst.GetValue(null) != null)
-                        return "ERR in-save";
+                    bool inSave = (s_fWorldInst != null && s_fWorldInst.GetValue(null) != null);
 
                     Stopwatch sw = Stopwatch.StartNew();
 
@@ -654,9 +665,33 @@ namespace ONIPreviewHelper
                     object mixedSettingsWorld = null;
                     IList listRules = null, listSubworlds = null, listUnknown = null, listSeasons = null;
                     int origRulesCnt = -1, origSubCnt = -1, origUnkCnt = -1, origSeaCnt = -1;
+                    bool prevKcrIgnoreAll = false;
+                    bool hasKcrIgnoreAll = false;
+                    bool prevDebugDisabled = false;
+                    bool hasDebugDisabled = false;
 
                     try
                     {
+                        if (s_fKcrIgnoreAll != null && s_fKcrIgnoreAll.IsStatic)
+                        {
+                            try
+                            {
+                                prevKcrIgnoreAll = (bool)s_fKcrIgnoreAll.GetValue(null);
+                                hasKcrIgnoreAll = true;
+                                s_fKcrIgnoreAll.SetValue(null, true);
+                            }
+                            catch { }
+                        }
+                        if (s_fDebugLoggingDisabled != null && s_fDebugLoggingDisabled.IsStatic)
+                        {
+                            try
+                            {
+                                prevDebugDisabled = (bool)s_fDebugLoggingDisabled.GetValue(null);
+                                hasDebugDisabled = true;
+                                s_fDebugLoggingDisabled.SetValue(null, true);
+                            }
+                            catch { }
+                        }
 
                         if (s_mDoWorldMixing != null && cgs != null && s_mCgsGetActiveWorldMix != null)
                         {
@@ -760,11 +795,22 @@ namespace ONIPreviewHelper
                         s_lastGenError = null;
                         s_mWgInitialise.Invoke(wg, new object[] { s_progressCb, s_errorCb, wSeed, wSeed, wSeed, wSeed, false, false });
 
-                        s_mGridReset.Invoke(null, new object[] { sizeX, sizeY });
+                        if (!inSave)
+                        {
+                            s_mGridReset.Invoke(null, new object[] { sizeX, sizeY });
+                        }
+                        else
+                        {
+                            s_fGridW.SetValue(null, sizeX);
+                            s_fGridH.SetValue(null, sizeY);
+                            s_fGridC.SetValue(null, sizeX * sizeY);
+                            if (s_fGridWm != null) s_fGridWm.SetValue(null, (float)sizeX);
+                            if (s_fGridHm != null) s_fGridHm.SetValue(null, (float)sizeY);
+                        }
 
                         bool okGen = (bool)s_mWgGenOffline.Invoke(wg, null);
                         if (!okGen)
-                            return "ERR gen-offline:" + (s_lastGenError ?? "unknown");
+                            return "ERR gen-offline:" + SanitizeSingleLine(s_lastGenError ?? "unknown");
 
                         s_mWgFinalizeStart.Invoke(wg, null);
 
@@ -777,7 +823,7 @@ namespace ONIPreviewHelper
                         bool okRender = (bool)s_mWgRenderOffline.Invoke(wg, renderArgs);
                         simData = renderArgs[3];
                         if (!okRender || simData == null)
-                            return "ERR render-offline:" + (s_lastGenError ?? "unknown");
+                            return "ERR render-offline:" + SanitizeSingleLine(s_lastGenError ?? "unknown");
 
                         Array simCells = s_tSimData.GetField("cells", ALL).GetValue(simData) as Array;
                         if (simCells == null || simCells.Length < sizeX * sizeY)
@@ -808,6 +854,15 @@ namespace ONIPreviewHelper
                     }
                     finally
                     {
+                        if (hasDebugDisabled && s_fDebugLoggingDisabled != null)
+                        {
+                            try { s_fDebugLoggingDisabled.SetValue(null, prevDebugDisabled); } catch { }
+                        }
+                        if (hasKcrIgnoreAll && s_fKcrIgnoreAll != null)
+                        {
+                            try { s_fKcrIgnoreAll.SetValue(null, prevKcrIgnoreAll); } catch { }
+                        }
+
                         TruncateList(listRules, origRulesCnt);
                         TruncateList(listSubworlds, origSubCnt);
                         TruncateList(listUnknown, origUnkCnt);
@@ -856,6 +911,17 @@ namespace ONIPreviewHelper
                     Thread.CurrentThread.CurrentCulture = prevCulture;
                 }
             }
+        }
+
+        static string SanitizeSingleLine(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            string clean = s.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            while (clean.Contains("  "))
+                clean = clean.Replace("  ", " ");
+            if (clean.Length > 240)
+                clean = clean.Substring(0, 240) + "...";
+            return clean;
         }
 
         static void AddRangeSafe(IList dst, IEnumerable src)
@@ -1876,9 +1942,22 @@ namespace ONIPreviewHelper
                 {
                     s_fTraitList = s_tTraits.GetField("TraitList", ALL);
                     s_mTraitsRemove = s_tTraits.GetMethod("Remove", ALL, null, new Type[] { tTrait }, null);
+                    s_mTraitsAdd = s_tTraits.GetMethod("Add", ALL, null, new Type[] { tTrait }, null);
+                    s_mTraitsHasStr = s_tTraits.GetMethod("HasTrait", ALL, null, new Type[] { typeof(string) }, null);
                     s_mTraitGetName = tTrait.GetMethod("GetName", ALL);
+                    s_mTraitGetTooltip = tTrait.GetMethod("GetTooltip", ALL, null, Type.EmptyTypes, null);
                     s_fTraitPositive = tTrait.GetField("PositiveTrait", ALL);
+                    for (Type bt = tTrait; bt != null && s_fTraitDesc == null; bt = bt.BaseType)
+                        s_fTraitDesc = bt.GetField("description", ALL | BindingFlags.DeclaredOnly);
                 }
+
+                s_tDb = s_asmCs.GetType("Db", false);
+                if (s_tDb != null)
+                {
+                    s_mDbGet = s_tDb.GetMethod("Get", ALL, null, Type.EmptyTypes, null);
+                    s_fDbTraits = s_tDb.GetField("traits", ALL);
+                }
+                s_tDupStats = s_asmCs.GetType("TUNING.DUPLICANTSTATS", false);
 
                 Type tComp = s_asmCore.GetType("UnityEngine.Component", true);
                 s_mGetComponent = tComp.GetMethod("GetComponent", ALL, null, new Type[] { typeof(Type) }, null);
@@ -2049,8 +2128,12 @@ namespace ONIPreviewHelper
                 }
                 if (string.Equals(verb, "DUPELIST", StringComparison.OrdinalIgnoreCase))
                     return CmdDupeList();
+                if (string.Equals(verb, "TRAITCATALOG", StringComparison.OrdinalIgnoreCase))
+                    return CmdTraitCatalog();
                 if (string.Equals(verb, "SETATTR", StringComparison.OrdinalIgnoreCase))
                     return CmdSetAttr(arg);
+                if (string.Equals(verb, "ADDTRAIT", StringComparison.OrdinalIgnoreCase))
+                    return CmdAddTrait(arg);
                 if (string.Equals(verb, "REMOVETRAIT", StringComparison.OrdinalIgnoreCase))
                     return CmdRemoveTrait(arg);
                 if (string.Equals(verb, "CELLTEMP", StringComparison.OrdinalIgnoreCase))
@@ -2076,24 +2159,59 @@ namespace ONIPreviewHelper
 
         static string CmdStudyAll()
         {
+            if (s_fStudyStudied == null) return "ERR no-studied-field";
             HashSet<object> list = new HashSet<object>();
             if (s_fCompGeysers != null && s_fGeyserStudyable != null)
             {
-                object gComp = s_fCompGeysers.GetValue(null);
-                if (gComp != null)
+                try
                 {
-                    IList geysers = gComp.GetType().GetProperty("Items", ALL).GetValue(gComp, null) as IList;
-                    if (geysers != null)
+                    object gComp = s_fCompGeysers.GetValue(null);
+                    if (gComp != null)
                     {
-                        for (int i = 0; i < geysers.Count; i++)
+                        Type gt = gComp.GetType();
+                        PropertyInfo piItems = gt.GetProperty("Items", ALL);
+                        if (piItems != null)
                         {
-                            object g = geysers[i];
-                            if (g == null) continue;
-                            object st = s_fGeyserStudyable.GetValue(g);
-                            if (st != null) list.Add(st);
+                            IList geysers = piItems.GetValue(gComp, null) as IList;
+                            if (geysers != null)
+                            {
+                                for (int i = 0; i < geysers.Count; i++)
+                                {
+                                    object g = geysers[i];
+                                    if (g == null) continue;
+                                    object st = s_fGeyserStudyable.GetValue(g);
+                                    if (st != null) list.Add(st);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            MethodInfo mWorldIds = gt.GetMethod("GetWorldsIds", ALL, null, Type.EmptyTypes, null)
+                                ?? gt.GetMethod("GetWorldIds", ALL, null, Type.EmptyTypes, null);
+                            MethodInfo mGetItems = gt.GetMethod("GetItems", ALL, null, new Type[] { typeof(int) }, null);
+                            if (mWorldIds != null && mGetItems != null)
+                            {
+                                IEnumerable wids = mWorldIds.Invoke(gComp, null) as IEnumerable;
+                                if (wids != null)
+                                {
+                                    foreach (object widObj in wids)
+                                    {
+                                        IList geysers = mGetItems.Invoke(gComp, new object[] { widObj }) as IList;
+                                        if (geysers == null) continue;
+                                        for (int i = 0; i < geysers.Count; i++)
+                                        {
+                                            object g = geysers[i];
+                                            if (g == null) continue;
+                                            object st = s_fGeyserStudyable.GetValue(g);
+                                            if (st != null) list.Add(st);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                catch { }
             }
             if (s_mUnityFindObjects != null && s_tStudyable != null)
             {
@@ -2115,15 +2233,20 @@ namespace ONIPreviewHelper
             int total = 0, studied = 0;
             foreach (object st in list)
             {
+                if (st == null) continue;
                 total++;
-                bool already = (bool)s_fStudyStudied.GetValue(st);
-                if (already) continue;
-                s_fStudyStudied.SetValue(st, true);
-                if (s_fStudyMarked != null) s_fStudyMarked.SetValue(st, false);
-                if (s_mStudyCancel != null) { try { s_mStudyCancel.Invoke(st, null); } catch { } }
-                if (s_mStudyRefresh != null) { try { s_mStudyRefresh.Invoke(st, null); } catch { } }
-                if (s_mStudyTrigger != null) { try { s_mStudyTrigger.Invoke(st, new object[] { -1436775550, null }); } catch { } }
-                studied++;
+                try
+                {
+                    object sv = s_fStudyStudied.GetValue(st);
+                    if (sv is bool && (bool)sv) continue;
+                    s_fStudyStudied.SetValue(st, true);
+                    if (s_fStudyMarked != null) s_fStudyMarked.SetValue(st, false);
+                    if (s_mStudyCancel != null) { try { s_mStudyCancel.Invoke(st, null); } catch { } }
+                    if (s_mStudyRefresh != null) { try { s_mStudyRefresh.Invoke(st, null); } catch { } }
+                    if (s_mStudyTrigger != null) { try { s_mStudyTrigger.Invoke(st, new object[] { -1436775550, null }); } catch { } }
+                    studied++;
+                }
+                catch { }
             }
             return "OK studied:" + studied + "/" + total;
         }
@@ -2262,9 +2385,10 @@ namespace ONIPreviewHelper
                             string tid = ReadTraitId(tr);
                             string tname = s_mTraitGetName != null ? (s_mTraitGetName.Invoke(tr, null) as string ?? tid) : tid;
                             bool pos = s_fTraitPositive != null && (bool)s_fTraitPositive.GetValue(tr);
-                            tname = CleanRichText(tname).Replace('|', '/').Replace(';', ' ').Replace(':', ' ');
+                            tname = CleanRichText(tname).Replace('|', '/').Replace(';', '，').Replace(':', '：');
+                            string tdesc = ReadTraitDesc(tr, tid);
                             if (trSb.Length > 0) trSb.Append(';');
-                            trSb.Append(tid).Append(':').Append(tname).Append(':').Append(pos ? "1" : "0");
+                            trSb.Append(tid).Append(':').Append(tname).Append(':').Append(pos ? "1" : "0").Append(':').Append(tdesc);
                         }
                     }
                 }
@@ -2290,6 +2414,191 @@ namespace ONIPreviewHelper
                 if (p != null) return p.GetValue(tr, null) as string ?? "";
             }
             return "";
+        }
+
+        static string ReadTraitDesc(object tr, string tid)
+        {
+            string raw = null;
+            if (tr != null && s_mTraitGetTooltip != null)
+            {
+                try { raw = s_mTraitGetTooltip.Invoke(tr, null) as string; } catch { }
+            }
+            if (string.IsNullOrEmpty(raw) && tr != null && s_fTraitDesc != null)
+            {
+                try { raw = s_fTraitDesc.GetValue(tr) as string; } catch { }
+            }
+            if (string.IsNullOrEmpty(raw) && !string.IsNullOrEmpty(tid) && s_mStringsTryGet != null)
+            {
+                try
+                {
+                    object[] args = new object[] { "STRINGS.DUPLICANTS.TRAITS." + tid.ToUpperInvariant() + ".DESC", null };
+                    if ((bool)s_mStringsTryGet.Invoke(null, args) && args[1] != null && s_fStringEntryVal != null)
+                        raw = s_fStringEntryVal.GetValue(args[1]) as string;
+                }
+                catch { }
+            }
+            if (string.IsNullOrEmpty(raw)) return "";
+            string clean = CleanRichText(raw);
+            return clean.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "；")
+                .Replace('|', '/').Replace(';', '，').Replace(':', '：').Trim();
+        }
+
+        static object GetDbTraitsSet()
+        {
+            if (s_mDbGet == null || s_fDbTraits == null) return null;
+            object db = s_mDbGet.Invoke(null, null);
+            return db != null ? s_fDbTraits.GetValue(db) : null;
+        }
+
+        static object ResolveTraitById(object dbTraits, string traitId)
+        {
+            if (dbTraits == null || string.IsNullOrEmpty(traitId)) return null;
+            if (s_mResTryGet == null)
+                s_mResTryGet = dbTraits.GetType().GetMethod("TryGet", ALL, null, new Type[] { typeof(string) }, null);
+            if (s_mResTryGet != null)
+            {
+                try
+                {
+                    object found = s_mResTryGet.Invoke(dbTraits, new object[] { traitId });
+                    if (found != null) return found;
+                }
+                catch { }
+            }
+            FieldInfo fr = dbTraits.GetType().GetField("resources", ALL);
+            IList res = fr != null ? (fr.GetValue(dbTraits) as IList) : null;
+            if (res != null)
+            {
+                for (int i = 0; i < res.Count; i++)
+                {
+                    object tr = res[i];
+                    if (tr != null && string.Equals(ReadTraitId(tr), traitId, StringComparison.OrdinalIgnoreCase))
+                        return tr;
+                }
+            }
+            return null;
+        }
+
+        static string CmdTraitCatalog()
+        {
+            object dbTraits = GetDbTraitsSet();
+            if (dbTraits == null) return "ERR no-db-traits";
+
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<string> rows = new List<string>();
+
+            if (s_tDupStats != null)
+            {
+                string[,] cats = new string[,]
+                {
+                    { "GOODTRAITS", "正面特质" },
+                    { "BADTRAITS", "负面特质" },
+                    { "GENESHUFFLERTRAITS", "基因改造" },
+                    { "BIONICUPGRADETRAITS", "仿生升级" },
+                    { "BIONICBUGTRAITS", "仿生缺陷" },
+                    { "JOYTRAITS", "愉悦反应" },
+                    { "STRESSTRAITS", "压力反应" },
+                    { "NEEDTRAITS", "生理需求" },
+                    { "SPECIALTRAITS", "特殊特质" }
+                };
+                int n = cats.GetLength(0);
+                for (int c = 0; c < n; c++)
+                {
+                    FieldInfo cf = s_tDupStats.GetField(cats[c, 0], ALL);
+                    IEnumerable items = cf != null ? (cf.GetValue(null) as IEnumerable) : null;
+                    if (items == null) continue;
+                    foreach (object item in items)
+                    {
+                        if (item == null) continue;
+                        string tid = item as string;
+                        if (string.IsNullOrEmpty(tid))
+                        {
+                            FieldInfo fid = item.GetType().GetField("id", ALL) ?? item.GetType().GetField("Id", ALL);
+                            if (fid != null) tid = fid.GetValue(item) as string;
+                        }
+                        if (string.IsNullOrEmpty(tid) || !seen.Add(tid)) continue;
+                        object tr = ResolveTraitById(dbTraits, tid);
+                        if (tr == null) continue;
+                        string tname = s_mTraitGetName != null ? (s_mTraitGetName.Invoke(tr, null) as string ?? tid) : tid;
+                        tname = CleanRichText(tname).Replace('|', '/').Replace('\r', ' ').Replace('\n', ' ');
+                        bool pos = s_fTraitPositive != null && (bool)s_fTraitPositive.GetValue(tr);
+                        string tdesc = ReadTraitDesc(tr, tid);
+                        rows.Add(tid + "|" + tname + "|" + (pos ? "1" : "0") + "|" + cats[c, 1] + "|" + tdesc);
+                    }
+                }
+            }
+
+            if (rows.Count == 0)
+            {
+                FieldInfo fr = dbTraits.GetType().GetField("resources", ALL);
+                IList res = fr != null ? (fr.GetValue(dbTraits) as IList) : null;
+                if (res != null)
+                {
+                    for (int i = 0; i < res.Count; i++)
+                    {
+                        object tr = res[i];
+                        if (tr == null) continue;
+                        string tid = ReadTraitId(tr);
+                        if (string.IsNullOrEmpty(tid) || !seen.Add(tid)) continue;
+                        if (tid.IndexOf("BaseTrait", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            tid.IndexOf("Critter", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            tid.IndexOf("Room", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            string.Equals(tid, "None", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        string tname = s_mTraitGetName != null ? (s_mTraitGetName.Invoke(tr, null) as string ?? tid) : tid;
+                        tname = CleanRichText(tname).Replace('|', '/').Replace('\r', ' ').Replace('\n', ' ');
+                        if (string.IsNullOrEmpty(tname)) continue;
+                        bool pos = s_fTraitPositive != null && (bool)s_fTraitPositive.GetValue(tr);
+                        string tdesc = ReadTraitDesc(tr, tid);
+                        rows.Add(tid + "|" + tname + "|" + (pos ? "1" : "0") + "|特质|" + tdesc);
+                    }
+                }
+            }
+
+            return "OK traits:" + rows.Count + (rows.Count > 0 ? ("\n" + string.Join("\n", rows.ToArray())) : "");
+        }
+
+        static string CmdAddTrait(string arg)
+        {
+            int sp = arg.IndexOf(' ');
+            if (sp <= 0) return "ERR args";
+            int instId;
+            if (!int.TryParse(arg.Substring(0, sp), out instId)) return "ERR bad-id";
+            string traitId = arg.Substring(sp + 1).Trim();
+            if (string.IsNullOrEmpty(traitId)) return "ERR args";
+
+            object mi = FindMinionByInstId(instId);
+            if (mi == null) return "ERR no-dupe";
+            object traitsComp = s_mGetComponent.Invoke(mi, new object[] { s_tTraits });
+            if (traitsComp == null || s_mTraitsAdd == null) return "ERR no-traits";
+
+            object dbTraits = GetDbTraitsSet();
+            object traitObj = ResolveTraitById(dbTraits, traitId);
+            if (traitObj == null) return "ERR unknown-trait";
+
+            bool already = false;
+            if (s_mTraitsHasStr != null)
+            {
+                try { already = (bool)s_mTraitsHasStr.Invoke(traitsComp, new object[] { ReadTraitId(traitObj) }); } catch { }
+            }
+            if (!already && s_fTraitList != null)
+            {
+                IList tlist = s_fTraitList.GetValue(traitsComp) as IList;
+                if (tlist != null)
+                {
+                    for (int i = 0; i < tlist.Count; i++)
+                    {
+                        if (string.Equals(ReadTraitId(tlist[i]), traitId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            already = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (already) return "ERR already-has";
+
+            s_mTraitsAdd.Invoke(traitsComp, new object[] { traitObj });
+            return "OK added:" + traitId;
         }
 
         static string CmdSetAttr(string arg)

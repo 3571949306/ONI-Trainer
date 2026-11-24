@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -121,6 +122,7 @@ namespace ONITrainer
         public bool CompareAtMost;
         public int MaxDist;
         public float MinYieldGps;
+        public byte MinGrade;
 
         public override string ToString()
         {
@@ -129,6 +131,9 @@ namespace ONITrainer
                 PoiFilterCatalogEntry.CategoryLabel(Category), DisplayName, op, MinCount);
             if (MaxDist > 0) s += string.Format("  距≤{0}", MaxDist);
             if (MinYieldGps > 0f) s += string.Format(CultureInfo.InvariantCulture, "  产≥{0:0.##}g/s", MinYieldGps);
+            if (MinGrade == 1) s += "  [仅S级]";
+            else if (MinGrade == 2) s += "  [A级及以上]";
+            else if (MinGrade == 3) s += "  [B级及以上]";
             return s;
         }
     }
@@ -360,7 +365,22 @@ namespace ONITrainer
         public static MapPreviewData LoadFromFile(string path)
         {
             using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8))
+            {
+                int b0 = fs.ReadByte();
+                int b1 = fs.ReadByte();
+                fs.Position = 0;
+                if (b0 == 0x1F && b1 == 0x8B)
+                {
+                    using (GZipStream gz = new GZipStream(fs, CompressionMode.Decompress))
+                        return LoadFromStream(gz);
+                }
+                return LoadFromStream(fs);
+            }
+        }
+
+        public static MapPreviewData LoadFromStream(Stream stream)
+        {
+            using (BinaryReader br = new BinaryReader(stream, Encoding.UTF8))
             {
                 byte[] magic = br.ReadBytes(4);
                 if (magic.Length != 4 || magic[0] != 'O' || magic[1] != 'N' || magic[2] != 'I' || magic[3] != 'P')
@@ -473,6 +493,91 @@ namespace ONITrainer
             }
         }
 
+        public void SaveToGzipFile(string path)
+        {
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            string tmp = path + ".tmp";
+            try
+            {
+                using (FileStream fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (GZipStream gz = new GZipStream(fs, CompressionMode.Compress))
+                using (BinaryWriter bw = new BinaryWriter(gz, Encoding.UTF8))
+                {
+                    bw.Write(new byte[] { (byte)'O', (byte)'N', (byte)'I', (byte)'P' });
+                    bw.Write(2);
+                    bw.Write(ClusterFilePath ?? "");
+                    bw.Write(Seed);
+                    bw.Write(WorldIndex);
+                    bw.Write(WorldName ?? "");
+                    bw.Write(Width);
+                    bw.Write(Height);
+                    bw.Write(WorldOffsetX);
+                    bw.Write(WorldOffsetY);
+                    bw.Write(BaseStartX);
+                    bw.Write(BaseStartY);
+                    bw.Write(ElapsedMs);
+                    bw.Write(TraitsSummary ?? "");
+
+                    int ec = Elements != null ? Elements.Length : 0;
+                    bw.Write(ec);
+                    for (int i = 0; i < ec; i++)
+                    {
+                        MapElementDef ed = Elements[i];
+                        bw.Write(ed.R);
+                        bw.Write(ed.G);
+                        bw.Write(ed.B);
+                        bw.Write(ed.State);
+                        bw.Write(ed.Name ?? "");
+                    }
+
+                    int total = Width * Height;
+                    for (int i = 0; i < total; i++) bw.Write(ElemIdx != null && i < ElemIdx.Length ? ElemIdx[i] : (ushort)0);
+                    for (int i = 0; i < total; i++) bw.Write(TempDeciC != null && i < TempDeciC.Length ? TempDeciC[i] : (short)0);
+                    if (ZoneType != null && ZoneType.Length >= total)
+                        bw.Write(ZoneType, 0, total);
+                    else
+                    {
+                        byte[] pad = new byte[total];
+                        if (ZoneType != null && ZoneType.Length > 0)
+                            Buffer.BlockCopy(ZoneType, 0, pad, 0, Math.Min(total, ZoneType.Length));
+                        bw.Write(pad, 0, total);
+                    }
+
+                    int pc = Pois != null ? Pois.Count : 0;
+                    bw.Write(pc);
+                    for (int i = 0; i < pc; i++)
+                    {
+                        MapPoiItem p = Pois[i];
+                        bw.Write(p.PrefabId ?? "");
+                        bw.Write(p.Category ?? "");
+                        bw.Write(p.DisplayName ?? "");
+                        bw.Write(p.X);
+                        bw.Write(p.Y);
+                        bw.Write((byte)(p.IsRandomGeyser ? 1 : 0));
+                        bw.Write((byte)(p.HasGeyserStats ? 1 : 0));
+                        bw.Write(p.AvgYieldGps);
+                        bw.Write(p.EruptRateGps);
+                        bw.Write(p.OutputTempC);
+                        bw.Write(p.EruptSec);
+                        bw.Write(p.IdleSec);
+                        bw.Write(p.ActiveCycles);
+                        bw.Write(p.DormantCycles);
+                        bw.Write(p.Grade);
+                        bw.Write(p.Percentile);
+                    }
+                }
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                throw;
+            }
+        }
+
         public int DistanceFromStart(MapPoiItem p)
         {
             if (p == null) return 0;
@@ -512,6 +617,8 @@ namespace ONITrainer
                 if (rule.MaxDist > 0 && p.DistFromStart > rule.MaxDist)
                     continue;
                 if (rule.MinYieldGps > 0f && (!p.HasGeyserStats || p.AvgYieldGps < rule.MinYieldGps))
+                    continue;
+                if (rule.MinGrade > 0 && (!p.HasGeyserStats || p.Grade == 0 || p.Grade > rule.MinGrade))
                     continue;
                 cnt++;
             }
@@ -612,6 +719,39 @@ namespace ONITrainer
                                     r = (byte)((er * 65 + zr * 35) / 100);
                                     g = (byte)((eg * 65 + zg * 35) / 100);
                                     b = (byte)((eb * 65 + zb * 35) / 100);
+                                }
+
+                                bool biomeEdge = (y + 1 < h && ZoneType[(y + 1) * w + x] != z) ||
+                                                 (x > 0 && ZoneType[si - 1] != z);
+                                if (biomeEdge)
+                                {
+                                    r = (byte)((r * 80) / 100);
+                                    g = (byte)((g * 80) / 100);
+                                    b = (byte)((b * 80) / 100);
+                                }
+                                else if (st == 3)
+                                {
+                                    int topIdx = y + 1 < h ? (y + 1) * w + x : si;
+                                    int leftIdx = x > 0 ? si - 1 : si;
+                                    int botIdx = y > 0 ? (y - 1) * w + x : si;
+                                    int rightIdx = x + 1 < w ? si + 1 : si;
+                                    ushort ti = ElemIdx[topIdx], li = ElemIdx[leftIdx], bi = ElemIdx[botIdx], ri = ElemIdx[rightIdx];
+                                    byte ts = ti < elemLen ? Elements[ti].State : (byte)0;
+                                    byte ls = li < elemLen ? Elements[li].State : (byte)0;
+                                    byte bs = bi < elemLen ? Elements[bi].State : (byte)0;
+                                    byte rs = ri < elemLen ? Elements[ri].State : (byte)0;
+                                    if (ts != 3 || ls != 3)
+                                    {
+                                        r = (byte)Math.Min(255, r + 14);
+                                        g = (byte)Math.Min(255, g + 14);
+                                        b = (byte)Math.Min(255, b + 14);
+                                    }
+                                    else if (bs != 3 || rs != 3)
+                                    {
+                                        r = (byte)((r * 86) / 100);
+                                        g = (byte)((g * 86) / 100);
+                                        b = (byte)((b * 86) / 100);
+                                    }
                                 }
                             }
                         }

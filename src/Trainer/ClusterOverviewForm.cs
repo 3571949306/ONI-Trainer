@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.Threading;
 using System.Windows.Forms;
@@ -17,6 +18,7 @@ namespace ONITrainer
 
         readonly ClusterDef _cluster;
         readonly int _seed;
+        readonly string _coordinate;
         readonly string _activeDlcCsv;
         readonly string _storyArg;
         readonly string _mixingCode;
@@ -28,10 +30,11 @@ namespace ONITrainer
         ListView _lv;
         Label _lblStatus;
         ProgressBar _pb;
-        Button _btnRescan, _btnStop;
+        Button _btnRescan, _btnExportAll, _btnStop;
 
         volatile bool _closing;
         volatile bool _stopReq;
+        volatile bool _exportingAll;
         Thread _scanThread;
 
         public ClusterOverviewForm(
@@ -47,6 +50,7 @@ namespace ONITrainer
         {
             _cluster = cluster;
             _seed = seed;
+            _coordinate = coordinate ?? "";
             _activeDlcCsv = activeDlcCsv ?? "";
             _storyArg = storyArg ?? "";
             _mixingCode = mixingCode ?? "";
@@ -56,9 +60,9 @@ namespace ONITrainer
             _orderedPlacements = cluster != null ? cluster.GetOrderedPlacements() : new List<WorldPlacementDef>();
 
             Text = string.Format("整星群总览  ·  {0}  ·  {1}",
-                cluster != null ? cluster.DisplayName : "", coordinate ?? "");
+                cluster != null ? cluster.DisplayName : "", _coordinate);
             ClientSize = new Size(1000, 560);
-            MinimumSize = new Size(800, 440);
+            MinimumSize = new Size(860, 440);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = C(BG);
             ForeColor = C(TXT);
@@ -79,31 +83,42 @@ namespace ONITrainer
             {
                 Text = "准备扫描星群内全部小行星…（双击任意行立即跳转地图预览）",
                 Location = new Point(14, 7),
-                Size = new Size(640, 20),
+                Size = new Size(540, 20),
                 ForeColor = C(ACC),
-                Font = _fontBold
+                Font = _fontBold,
+                AutoEllipsis = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
             _pb = new ProgressBar
             {
                 Location = new Point(14, 31),
-                Size = new Size(640, 14),
+                Size = new Size(540, 14),
                 Minimum = 0,
-                Maximum = Math.Max(1, _orderedPlacements.Count)
+                Maximum = Math.Max(1, _orderedPlacements.Count),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
 
-            _btnRescan = MakeBtn("开始/继续扫描", 672, 12, 120, 30, ACC, 0x0E231C, true);
+            _btnRescan = MakeBtn("开始/继续扫描", 568, 12, 112, 30, ACC, 0x0E231C, true);
+            _btnRescan.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _btnRescan.Click += (s, e) => StartScan();
 
-            _btnStop = MakeBtn("停止", 798, 12, 76, 30, BTN, TXT, false);
+            _btnExportAll = MakeBtn("导出全星群大图", 686, 12, 124, 30, BTN, TXT, true);
+            _btnExportAll.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _btnExportAll.Click += (s, e) => ExportAllCombinedPng();
+
+            _btnStop = MakeBtn("停止", 816, 12, 76, 30, BTN, TXT, false);
+            _btnStop.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _btnStop.Enabled = false;
             _btnStop.Click += (s, e) => { _stopReq = true; };
 
-            Button btnClose = MakeBtn("关闭", 882, 12, 102, 30, BTN, TXT, false);
+            Button btnClose = MakeBtn("关闭", 898, 12, 88, 30, BTN, TXT, false);
+            btnClose.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnClose.Click += (s, e) => Close();
 
             top.Controls.Add(_lblStatus);
             top.Controls.Add(_pb);
             top.Controls.Add(_btnRescan);
+            top.Controls.Add(_btnExportAll);
             top.Controls.Add(_btnStop);
             top.Controls.Add(btnClose);
 
@@ -236,14 +251,189 @@ namespace ONITrainer
 
         void StartScan()
         {
+            if (_exportingAll) return;
             if (_scanThread != null && _scanThread.IsAlive) return;
             _stopReq = false;
             _btnRescan.Enabled = false;
+            if (_btnExportAll != null) _btnExportAll.Enabled = false;
             _btnStop.Enabled = true;
 
             _scanThread = new Thread(ScanWorker);
             _scanThread.IsBackground = true;
             _scanThread.Start();
+        }
+
+        void ExportAllCombinedPng()
+        {
+            if (_exportingAll) return;
+            if (_scanThread != null && _scanThread.IsAlive)
+            {
+                MessageBox.Show(this, "正在扫描星群中，请等待扫描完成或先点击「停止」后再导出。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (_orderedPlacements.Count == 0)
+            {
+                MessageBox.Show(this, "当前星群没有可导出的小行星。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            int missing = 0;
+            int cachedCount = 0;
+            lock (_sharedCache)
+            {
+                for (int i = 0; i < _orderedPlacements.Count; i++)
+                {
+                    MapPreviewData existing;
+                    if (_sharedCache.TryGetValue(_orderedPlacements[i].PlacementIndex, out existing) && existing != null) cachedCount++;
+                    else missing++;
+                }
+            }
+
+            BridgePreviewState initialState = _getBridge != null ? _getBridge() : null;
+            bool hasBridge = (initialState != null && initialState.Bridge != null);
+            if (missing > 0 && !hasBridge)
+            {
+                if (cachedCount == 0)
+                {
+                    MessageBox.Show(this, "当前未连接游戏且尚无缓存，请先启动《缺氧》游戏再导出全部地图。", "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                DialogResult dr = MessageBox.Show(this,
+                    string.Format("当前未连接游戏，尚有 {0} 颗小行星未扫描。\r\n是否仅将已完成的 {1} 颗小行星合并导出为大图？", missing, cachedCount),
+                    "导出确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (dr != DialogResult.Yes) return;
+            }
+
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Filter = "PNG 高清大图 (*.png)|*.png";
+                sfd.FileName = string.Format("{0}_{1}_ALL.png",
+                    _cluster != null ? _cluster.CoordinatePrefix : "ONI", _seed);
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+                string outPath = sfd.FileName;
+                _exportingAll = true;
+                _stopReq = false;
+                _btnRescan.Enabled = false;
+                if (_btnExportAll != null) _btnExportAll.Enabled = false;
+                _btnStop.Enabled = true;
+
+                Thread t = new Thread(() =>
+                {
+                    int done = 0;
+                    int failed = 0;
+                    int total = _orderedPlacements.Count;
+                    try
+                    {
+                        for (int i = 0; i < total; i++)
+                        {
+                            if (_closing || _stopReq) break;
+                            int rowIdx = i;
+                            WorldPlacementDef wp = _orderedPlacements[i];
+                            MapPreviewData data;
+                            lock (_sharedCache) { _sharedCache.TryGetValue(wp.PlacementIndex, out data); }
+
+                            if (data == null)
+                            {
+                                BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                                if (st == null || st.Bridge == null) break;
+
+                                SetUi(() =>
+                                {
+                                    if (rowIdx < _lv.Items.Count) _lv.Items[rowIdx].SubItems[3].Text = "生成中…";
+                                    _lblStatus.Text = string.Format("导出全星群大图 ({0}/{1})：正在生成 {2}…",
+                                        i + 1, total, wp.World != null ? wp.World.DisplayName : wp.WorldId);
+                                    _lblStatus.ForeColor = C(WARN);
+                                });
+
+                                string err;
+                                data = st.Bridge.GenerateMapPreview(
+                                    _cluster.FilePath, _seed, wp.PlacementIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                                if (data == null)
+                                {
+                                    failed++;
+                                    SetUi(() => { if (rowIdx < _lv.Items.Count) _lv.Items[rowIdx].SubItems[3].Text = "失败"; });
+                                    continue;
+                                }
+                                lock (_sharedCache) { _sharedCache[wp.PlacementIndex] = data; }
+                                if (SeedStore.IsFavorite(_coordinate, _seed))
+                                    SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, data);
+                            }
+
+                            done++;
+                            MapPreviewData cap = data;
+                            int doneSnap = done;
+                            SetUi(() =>
+                            {
+                                UpdateRowFromData(rowIdx, cap);
+                                _pb.Value = Math.Min(_pb.Maximum, doneSnap);
+                            });
+                        }
+
+                        if (_closing || _stopReq)
+                        {
+                            SetUi(() =>
+                            {
+                                _exportingAll = false;
+                                _btnRescan.Enabled = true;
+                                if (_btnExportAll != null) _btnExportAll.Enabled = true;
+                                _btnStop.Enabled = false;
+                                _lblStatus.Text = "已取消导出全星群大图";
+                                _lblStatus.ForeColor = C(SUB);
+                            });
+                            return;
+                        }
+
+                        SetUi(() =>
+                        {
+                            _lblStatus.Text = "正在合成全星群高清大图，请稍候…";
+                            _lblStatus.ForeColor = C(WARN);
+                        });
+
+                        Dictionary<int, MapPreviewData> snap = new Dictionary<int, MapPreviewData>();
+                        lock (_sharedCache)
+                        {
+                            foreach (KeyValuePair<int, MapPreviewData> kv in _sharedCache)
+                                if (kv.Value != null) snap[kv.Key] = kv.Value;
+                        }
+
+                        int imgW, imgH;
+                        using (Bitmap big = MapPreviewForm.RenderCombinedClusterBitmap(
+                            _cluster, _coordinate, _orderedPlacements, snap, MapRenderMode.BiomeTerrain, null))
+                        {
+                            imgW = big.Width;
+                            imgH = big.Height;
+                            big.Save(outPath, ImageFormat.Png);
+                        }
+
+                        SetUi(() =>
+                        {
+                            _exportingAll = false;
+                            _btnRescan.Enabled = true;
+                            if (_btnExportAll != null) _btnExportAll.Enabled = true;
+                            _btnStop.Enabled = false;
+                            string warnNote = failed > 0 ? string.Format("（{0} 颗未成功生成）", failed) : "";
+                            _lblStatus.Text = string.Format("已导出全星群大图 ({0}×{1})：{2}{3}", imgW, imgH, outPath, warnNote);
+                            _lblStatus.ForeColor = C(ACC);
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        SetUi(() =>
+                        {
+                            _exportingAll = false;
+                            _btnRescan.Enabled = true;
+                            if (_btnExportAll != null) _btnExportAll.Enabled = true;
+                            _btnStop.Enabled = false;
+                            _lblStatus.Text = "导出全星群大图失败：" + ex.Message;
+                            _lblStatus.ForeColor = C(WARN);
+                            MessageBox.Show(this, "导出全星群大图失败：" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        });
+                    }
+                });
+                t.IsBackground = true;
+                t.Start();
+            }
         }
 
         void ScanWorker()
@@ -279,11 +469,6 @@ namespace ONITrainer
                         errStop = "未连接游戏，扫描已暂停。";
                         break;
                     }
-                    if (st.InSave)
-                    {
-                        errStop = "检测到已进入存档，需返回主菜单后继续扫描。";
-                        break;
-                    }
 
                     string err;
                     data = st.Bridge.GenerateMapPreview(
@@ -316,6 +501,7 @@ namespace ONITrainer
             SetUi(() =>
             {
                 _btnRescan.Enabled = true;
+                if (_btnExportAll != null) _btnExportAll.Enabled = true;
                 _btnStop.Enabled = false;
                 if (_stopReq)
                 {

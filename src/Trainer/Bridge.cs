@@ -348,7 +348,7 @@ namespace ONITrainer
                     outPath,
                     mixingCsv ?? "");
 
-                string resp = Cmd(req, 3000, 45000);
+                string resp = Cmd(req, 3000, 50000);
                 if (string.IsNullOrEmpty(resp))
                 {
                     err = "游戏未响应地图预览请求，请重试";
@@ -356,10 +356,15 @@ namespace ONITrainer
                 }
                 if (!resp.StartsWith("OK"))
                 {
-                    if (resp.Contains("in-save"))
-                        err = "当前已进入游戏存档，请先返回游戏「主菜单」再生成地图预览（以免影响当前存档）。";
+                    string cleanResp = resp.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                    if (cleanResp.Contains("in-save"))
+                        err = "存档内生成地图预览未能完成，请重试或返回主菜单再试。";
+                    else if (cleanResp.Contains("no-hook"))
+                        err = "存档尚未就绪，请稍等 1 秒后重试。";
+                    else if (cleanResp.Contains("gen-offline:") || cleanResp.Contains("render-offline:"))
+                        err = "该种子地形生成失败（多特质冲突导致游戏坏种子）：" + cleanResp;
                     else
-                        err = "地图生成失败：" + resp;
+                        err = "地图生成失败：" + cleanResp;
                     return null;
                 }
                 if (!File.Exists(outPath))

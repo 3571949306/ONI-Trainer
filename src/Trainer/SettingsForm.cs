@@ -278,7 +278,7 @@ namespace ONITrainer
 
             grpAbout.Controls.Add(new Label
             {
-                Text = "ONI 修改器  " + AppUpdater.GetCurrentVersionDisplay() + "  ·  独立单文件外部修改器（不装 Mod、不改游戏文件）",
+                Text = "ONI 修改器  " + AppUpdater.GetCurrentVersionDisplay() + "  ·  独立单文件修改器（无需安装、不改游戏文件）",
                 ForeColor = C(TXT),
                 Font = _fontReg,
                 Location = new Point(14, 22),

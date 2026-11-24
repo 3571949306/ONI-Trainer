@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace ONITrainer
@@ -51,6 +52,192 @@ namespace ONITrainer
                 string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ONITrainer");
                 return Path.Combine(dir, "favorites.tsv");
             }
+        }
+
+        public static string PreviewsRootDir
+        {
+            get
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ONITrainer");
+                return Path.Combine(Path.Combine(dir, "favorites"), "previews");
+            }
+        }
+
+        public static string GetPreviewDir(string coord, int seed)
+        {
+            string key = MakeKey(coord, seed);
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(key));
+                StringBuilder sb = new StringBuilder(24);
+                sb.Append("s").Append(seed).Append('_');
+                for (int i = 0; i < 8; i++)
+                    sb.Append(hash[i].ToString("x2"));
+                return Path.Combine(PreviewsRootDir, sb.ToString());
+            }
+        }
+
+        public static int GetSavedPreviewCount(string coord, int seed)
+        {
+            try
+            {
+                if (seed <= 0 || !IsFavorite(coord, seed)) return 0;
+                string dir = GetPreviewDir(coord, seed);
+                if (!Directory.Exists(dir)) return 0;
+                return Directory.GetFiles(dir, "w*.onip.gz").Length;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public static void SaveFavoritePreviews(string coord, int seed, Dictionary<int, MapPreviewData> maps)
+        {
+            if (seed <= 0 || maps == null || maps.Count == 0) return;
+            try
+            {
+                string dir = GetPreviewDir(coord, seed);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                foreach (MapPreviewData md in maps.Values)
+                {
+                    if (md == null) continue;
+                    string fp = Path.Combine(dir, "w" + md.WorldIndex + ".onip.gz");
+                    md.SaveToGzipFile(fp);
+                }
+            }
+            catch { }
+        }
+
+        public static void SaveSingleFavoritePreview(string coord, int seed, MapPreviewData data)
+        {
+            if (seed <= 0 || data == null) return;
+            try
+            {
+                string dir = GetPreviewDir(coord, seed);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                string fp = Path.Combine(dir, "w" + data.WorldIndex + ".onip.gz");
+                data.SaveToGzipFile(fp);
+
+                Dictionary<int, MapPreviewData> all = LoadFavoritePreviews(coord, seed);
+                string sum = BuildPoiSummaryFromMaps(all);
+                if (!string.IsNullOrEmpty(sum))
+                {
+                    bool changed = false;
+                    lock (_lock)
+                    {
+                        EnsureFavoritesLoadedLocked();
+                        string k = MakeKey(coord, seed);
+                        for (int i = 0; i < _favorites.Count; i++)
+                        {
+                            if (string.Equals(MakeKey(_favorites[i].Coordinate, _favorites[i].Seed), k, StringComparison.Ordinal))
+                            {
+                                _favorites[i].PoiSummary = sum;
+                                changed = true;
+                            }
+                        }
+                        if (changed) SaveFavoritesLocked(FavoritesPath);
+                    }
+                    if (changed) RaiseChanged();
+                }
+            }
+            catch { }
+        }
+
+        static string BuildPoiSummaryFromMaps(Dictionary<int, MapPreviewData> maps)
+        {
+            if (maps == null || maps.Count == 0) return "";
+            List<int> keys = new List<int>(maps.Keys);
+            keys.Sort();
+            List<string> ps = new List<string>();
+            for (int i = 0; i < keys.Count; i++)
+            {
+                MapPreviewData md = maps[keys[i]];
+                if (md == null) continue;
+                int c = 0;
+                for (int p = 0; p < md.Pois.Count; p++)
+                    if (md.Pois[p].Category != "start") c++;
+                ps.Add(md.WorldName + "(" + c + "POI)");
+            }
+            return string.Join(", ", ps.ToArray());
+        }
+
+        public static Dictionary<int, MapPreviewData> LoadFavoritePreviews(string coord, int seed)
+        {
+            Dictionary<int, MapPreviewData> res = new Dictionary<int, MapPreviewData>();
+            if (seed <= 0) return res;
+            try
+            {
+                string dir = GetPreviewDir(coord, seed);
+                if (!Directory.Exists(dir)) return res;
+                string[] files = Directory.GetFiles(dir, "w*.onip.gz");
+                for (int i = 0; i < files.Length; i++)
+                {
+                    try
+                    {
+                        MapPreviewData d = MapPreviewData.LoadFromFile(files[i]);
+                        if (d != null) res[d.WorldIndex] = d;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return res;
+        }
+
+        public static void DeleteFavoritePreviews(string coord, int seed)
+        {
+            if (seed <= 0) return;
+            try
+            {
+                string dir = GetPreviewDir(coord, seed);
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, true);
+            }
+            catch { }
+        }
+
+        public static void UpsertFavorite(SeedRecord rec, Dictionary<int, MapPreviewData> maps)
+        {
+            if (rec == null || rec.Seed <= 0) return;
+            lock (_lock)
+            {
+                EnsureFavoritesLoadedLocked();
+                SeedRecord item = rec.Clone();
+                if (string.IsNullOrEmpty(item.Timestamp))
+                    item.Timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                if (string.IsNullOrEmpty(item.PoiSummary) && maps != null && maps.Count > 0)
+                    item.PoiSummary = BuildPoiSummaryFromMaps(maps);
+
+                string k = MakeKey(item.Coordinate, item.Seed);
+                int idx = -1;
+                for (int i = 0; i < _favorites.Count; i++)
+                {
+                    if (string.Equals(MakeKey(_favorites[i].Coordinate, _favorites[i].Seed), k, StringComparison.Ordinal))
+                    {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx >= 0)
+                {
+                    SeedRecord existing = _favorites[idx];
+                    if (string.IsNullOrEmpty(item.Note)) item.Note = existing.Note;
+                    if (string.IsNullOrEmpty(item.TraitSummary)) item.TraitSummary = existing.TraitSummary;
+                    if (string.IsNullOrEmpty(item.PoiSummary)) item.PoiSummary = existing.PoiSummary;
+                    if (string.IsNullOrEmpty(item.ClusterPath)) item.ClusterPath = existing.ClusterPath;
+                    if (string.IsNullOrEmpty(item.ClusterName)) item.ClusterName = existing.ClusterName;
+                    _favorites[idx] = item;
+                }
+                else
+                {
+                    _favorites.Insert(0, item);
+                }
+                SaveFavoritesLocked(FavoritesPath);
+            }
+            if (maps != null && maps.Count > 0)
+                SaveFavoritePreviews(rec.Coordinate, rec.Seed, maps);
+            RaiseChanged();
         }
 
         static string MakeKey(string coord, int seed)
@@ -146,6 +333,7 @@ namespace ONITrainer
                 }
                 SaveFavoritesLocked(FavoritesPath);
             }
+            if (!nowFav) DeleteFavoritePreviews(rec.Coordinate, rec.Seed);
             RaiseChanged();
             return nowFav;
         }
@@ -167,7 +355,11 @@ namespace ONITrainer
                 }
                 if (changed) SaveFavoritesLocked(FavoritesPath);
             }
-            if (changed) RaiseChanged();
+            if (changed)
+            {
+                DeleteFavoritePreviews(coord, seed);
+                RaiseChanged();
+            }
         }
 
         public static void UpdateNote(string coord, int seed, string note)

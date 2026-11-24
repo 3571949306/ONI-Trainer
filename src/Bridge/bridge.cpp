@@ -572,12 +572,15 @@ enum {
     QC_CLEANUP,
     QC_HELPER_CMD,
     QC_SURVIVAL,
+    QC_PREVIEW,
 };
 
 static volatile float g_stress_cap = -1.f;
 static volatile int g_survival_mask = 0;
 static char g_hcmd_in[2048] = {0};
 static char g_hcmd_out[65536] = {0};
+static char g_prev_in[2048] = {0};
+static char g_prev_out[2048] = {0};
 static int g_frame = 0;
 static int set_stress_cap(float cap);
 static int set_morale_floor(float floor);
@@ -596,6 +599,7 @@ static int research_complete_all();
 static int refresh_plan();
 static int reveal_all();
 static int run_helper_exec(const char* inStr, char* outBuf, int outCap);
+static int run_helper_preview(const char* inStr, char* outBuf, int outCap);
 static void run_helper_tick(int mask);
 static void* g_game_update_tramp = 0;
 
@@ -2018,6 +2022,7 @@ static void qc_dispatch(QcCmd* c) {
         case QC_MORALE_EXP: { res = set_morale_exp_cap(c->f1); logf("main morale_exp_cap:%.1f n:%d", c->f1, res); break; }
         case QC_REVEAL: { res = reveal_all(); logf("main reveal:%d", res); break; }
         case QC_HELPER_CMD: { res = run_helper_exec(g_hcmd_in, g_hcmd_out, sizeof(g_hcmd_out)); logf("main helper:%d", res); break; }
+        case QC_PREVIEW: { res = run_helper_preview(g_prev_in, g_prev_out, sizeof(g_prev_out)); logf("main preview:%d", res); break; }
         case QC_SURVIVAL: {
             g_survival_mask = c->i1;
             if (g_survival_mask != 0) run_helper_tick(g_survival_mask);
@@ -2256,6 +2261,10 @@ static int run_helper_exec(const char* inStr, char* outBuf, int outCap) {
     return invoke_helper_str(g_helper_exec_main, inStr, outBuf, outCap);
 }
 
+static int run_helper_preview(const char* inStr, char* outBuf, int outCap) {
+    return invoke_helper_str(g_helper_preview, inStr, outBuf, outCap);
+}
+
 static void run_helper_tick(int mask) {
     if (!g_helper_tick_main || mask == 0) return;
     void* a[1] = { &mask };
@@ -2324,15 +2333,37 @@ static void proc_cmd(char* buf, char* out, int outsz) {
         return;
     }
     if (!_strnicmp(buf, "PREVIEW ", 8)) {
-
-        if (world_instance()) {
-            snprintf(out, outsz, "ERR in-save");
-            return;
-        }
         if (!g_ready) init();
         if (!g_ready) { snprintf(out, outsz, "ERR not-ready"); return; }
         const char* pargs = buf + 8;
         while (*pargs == ' ') ++pargs;
+        if (world_instance()) {
+            if (!g_game_update_tramp && !install_game_update_hook()) {
+                snprintf(out, outsz, "ERR no-sync");
+                return;
+            }
+            if (!g_helper_preview) {
+                snprintf(out, outsz, "ERR no-helper");
+                return;
+            }
+            strncpy(g_prev_in, pargs, sizeof(g_prev_in) - 1);
+            g_prev_in[sizeof(g_prev_in) - 1] = 0;
+            g_prev_out[0] = 0;
+            QcCmd c; memset(&c, 0, sizeof(c)); c.type = QC_PREVIEW;
+            int res = 0;
+            int st = qc_run_sync(c, 40000, &res);
+            if (st == 1) {
+                strncpy(out, g_prev_out, outsz - 1);
+                out[outsz - 1] = 0;
+            } else if (st == 0) {
+                snprintf(out, outsz, "ERR preview-timeout");
+            } else if (st == -2) {
+                snprintf(out, outsz, "ERR not-in-save");
+            } else {
+                snprintf(out, outsz, "ERR queue:%d", st);
+            }
+            return;
+        }
         invoke_helper_str(g_helper_preview, pargs, out, outsz);
         return;
     }

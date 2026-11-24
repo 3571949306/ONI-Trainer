@@ -26,9 +26,10 @@ namespace ONITrainer
             { "Cooking", "烹饪" },
             { "Caring", "医疗" },
             { "Strength", "力量" },
-            { "Art", "艺术" },
+            { "Art", "创作" },
             { "Botanist", "农业" },
-            { "Ranching", "畜牧" }
+            { "Ranching", "畜牧" },
+            { "SpaceNavigation", "驾驶" }
         };
 
         sealed class TraitEntry
@@ -36,9 +37,12 @@ namespace ONITrainer
             public string Id;
             public string Name;
             public bool Positive;
+            public string Category;
+            public string Description;
             public override string ToString()
             {
-                return (Positive ? "[+] " : "[-] ") + Name + " (" + Id + ")";
+                string cat = string.IsNullOrEmpty(Category) ? "" : (" · " + Category);
+                return (Positive ? "[+] " : "[-] ") + Name + cat + " (" + Id + ")";
             }
         }
 
@@ -57,11 +61,13 @@ namespace ONITrainer
         }
 
         readonly List<DupeRecord> _dupes = new List<DupeRecord>();
+        readonly List<TraitEntry> _catalogTraits = new List<TraitEntry>();
         readonly Dictionary<string, NumericUpDown> _numMap = new Dictionary<string, NumericUpDown>(StringComparer.OrdinalIgnoreCase);
-        ComboBox _cboDupe;
+        ComboBox _cboDupe, _cboAddTrait;
         ListBox _lstTraits;
+        TextBox _txtTraitDesc;
         Label _lblStatus;
-        Button _btnApplyAttr, _btnMaxAttr, _btnRemoveTrait, _btnRefresh;
+        Button _btnApplyAttr, _btnMaxAttr, _btnAddTrait, _btnRemoveTrait, _btnRefresh;
 
         public DupeEditorForm(Bridge bridge, Action<string> log)
         {
@@ -69,7 +75,7 @@ namespace ONITrainer
             _log = log;
 
             Text = "高级工具 · 复制人属性与特质编辑器";
-            ClientSize = new Size(736, 514);
+            ClientSize = new Size(780, 558);
             MinimumSize = Size;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -100,7 +106,7 @@ namespace ONITrainer
             _cboDupe = new ComboBox
             {
                 Location = new Point(96, 11),
-                Size = new Size(256, 26),
+                Size = new Size(276, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = C(INPUT),
                 ForeColor = C(TXT),
@@ -109,15 +115,15 @@ namespace ONITrainer
             _cboDupe.SelectedIndexChanged += (s, e) => ShowSelectedDupe();
             top.Controls.Add(_cboDupe);
 
-            _btnRefresh = MakeBtn("刷新列表", 364, 10, 90, 28, BTN, TXT, false);
+            _btnRefresh = MakeBtn("刷新列表", 384, 10, 90, 28, BTN, TXT, false);
             _btnRefresh.Click += (s, e) => LoadDupes();
             top.Controls.Add(_btnRefresh);
 
             _lblStatus = new Label
             {
                 Text = "读取中…",
-                Location = new Point(464, 14),
-                Size = new Size(256, 20),
+                Location = new Point(484, 14),
+                Size = new Size(280, 20),
                 ForeColor = C(ACC),
                 TextAlign = ContentAlignment.MiddleRight
             };
@@ -125,9 +131,9 @@ namespace ONITrainer
 
             GroupBox gAttr = new GroupBox
             {
-                Text = "工作属性等级（0 ~ 99）",
-                Location = new Point(16, 58),
-                Size = new Size(372, 396),
+                Text = "工作属性等级（0 ~ 99，含驾驶共 12 项）",
+                Location = new Point(16, 56),
+                Size = new Size(372, 438),
                 ForeColor = C(ACC),
                 BackColor = C(BG),
                 Font = _fontBold
@@ -139,7 +145,7 @@ namespace ONITrainer
                 int col = i % 2;
                 int row = i / 2;
                 int x = 14 + col * 176;
-                int y = 30 + row * 48;
+                int y = 30 + row * 52;
 
                 gAttr.Controls.Add(new Label
                 {
@@ -165,9 +171,9 @@ namespace ONITrainer
                 gAttr.Controls.Add(num);
             }
 
-            _btnApplyAttr = MakeBtn("应用全部属性", 14, 348, 166, 32, ACC, 0x0E231C, true);
+            _btnApplyAttr = MakeBtn("应用全部属性", 14, 392, 166, 32, ACC, 0x0E231C, true);
             _btnApplyAttr.Click += (s, e) => ApplyAttributes();
-            _btnMaxAttr = MakeBtn("一键全部设为 20 级", 190, 348, 166, 32, BTN, TXT, false);
+            _btnMaxAttr = MakeBtn("一键全部设为 20 级", 190, 392, 166, 32, BTN, TXT, false);
             _btnMaxAttr.Click += (s, e) =>
             {
                 foreach (NumericUpDown num in _numMap.Values) num.Value = 20;
@@ -177,9 +183,9 @@ namespace ONITrainer
 
             GroupBox gTrait = new GroupBox
             {
-                Text = "拥有特质（红色为负面特质，可安全移除）",
-                Location = new Point(398, 58),
-                Size = new Size(322, 396),
+                Text = "拥有与添加特质（绿=正面 红=负面，点选查看说明）",
+                Location = new Point(398, 56),
+                Size = new Size(366, 438),
                 ForeColor = C(ACC),
                 BackColor = C(BG),
                 Font = _fontBold
@@ -188,7 +194,7 @@ namespace ONITrainer
             _lstTraits = new ListBox
             {
                 Location = new Point(14, 28),
-                Size = new Size(294, 308),
+                Size = new Size(338, 212),
                 BackColor = C(CARD),
                 ForeColor = C(TXT),
                 BorderStyle = BorderStyle.FixedSingle,
@@ -197,13 +203,54 @@ namespace ONITrainer
                 Font = _fontReg
             };
             _lstTraits.DrawItem += DrawTraitItem;
+            _lstTraits.SelectedIndexChanged += (s, e) => ShowTraitDescription(_lstTraits.SelectedItem as TraitEntry);
             gTrait.Controls.Add(_lstTraits);
 
-            _btnRemoveTrait = MakeBtn("移除选中特质", 14, 348, 166, 32, BTN, ERR, true);
+            _txtTraitDesc = new TextBox
+            {
+                Location = new Point(14, 248),
+                Size = new Size(338, 86),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = C(CARD),
+                ForeColor = C(0xBFD8CF),
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = _fontReg,
+                Text = "点选上方已拥有特质或下方待添加特质，即可查看其游戏效果说明。"
+            };
+            gTrait.Controls.Add(_txtTraitDesc);
+
+            gTrait.Controls.Add(new Label
+            {
+                Text = "新增特质",
+                Location = new Point(14, 349),
+                Size = new Size(60, 22),
+                ForeColor = C(TXT),
+                Font = _fontReg
+            });
+
+            _cboAddTrait = new ComboBox
+            {
+                Location = new Point(78, 346),
+                Size = new Size(274, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                FlatStyle = FlatStyle.Flat,
+                Font = _fontReg
+            };
+            _cboAddTrait.SelectedIndexChanged += (s, e) => ShowTraitDescription(_cboAddTrait.SelectedItem as TraitEntry);
+            gTrait.Controls.Add(_cboAddTrait);
+
+            _btnAddTrait = MakeBtn("添加选中特质", 14, 392, 162, 32, ACC, 0x0E231C, true);
+            _btnAddTrait.Click += (s, e) => AddSelectedTrait();
+            _btnRemoveTrait = MakeBtn("移除选中特质", 190, 392, 162, 32, BTN, ERR, true);
             _btnRemoveTrait.Click += (s, e) => RemoveSelectedTrait();
+            gTrait.Controls.Add(_btnAddTrait);
             gTrait.Controls.Add(_btnRemoveTrait);
 
-            Button btnClose = MakeBtn("关闭", 626, 468, 94, 32, BTN, TXT, false);
+            Button btnClose = MakeBtn("关闭", 670, 508, 94, 32, BTN, TXT, false);
             btnClose.Click += (s, e) => Close();
 
             Controls.Add(gAttr);
@@ -245,12 +292,67 @@ namespace ONITrainer
                 fg, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
         }
 
+        void ShowTraitDescription(TraitEntry te)
+        {
+            if (_txtTraitDesc == null) return;
+            if (te == null)
+            {
+                _txtTraitDesc.Text = "点选上方已拥有特质或下方待添加特质，即可查看其游戏效果说明。";
+                return;
+            }
+            string head = (te.Positive ? "【正面 · " : "【负面 · ") + te.Name + "】";
+            if (!string.IsNullOrEmpty(te.Category)) head += "（" + te.Category + "）";
+            string body = string.IsNullOrEmpty(te.Description) ? "（暂无说明文本）" : te.Description;
+            _txtTraitDesc.Text = head + "\r\n" + body;
+        }
+
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             float scale = DpiHelper.GetDpiScale();
             if (scale > 1.01f) _lstTraits.ItemHeight = (int)Math.Round(24 * scale);
+            LoadTraitCatalog();
             LoadDupes();
+        }
+
+        void LoadTraitCatalog()
+        {
+            if (_bridge == null || _catalogTraits.Count > 0) return;
+            string err = null;
+            string resp = _bridge.RunHelperCmd("TRAITCATALOG", out err);
+            if (string.IsNullOrEmpty(resp)) return;
+
+            string[] lines = resp.Split('\n');
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line.Length == 0) continue;
+                string[] cols = line.Split('|');
+                if (cols.Length < 3) continue;
+                _catalogTraits.Add(new TraitEntry
+                {
+                    Id = cols[0],
+                    Name = cols[1],
+                    Positive = cols[2] == "1",
+                    Category = cols.Length > 3 ? cols[3] : "",
+                    Description = cols.Length > 4 ? cols[4] : ""
+                });
+            }
+
+            _catalogTraits.Sort((a, b) =>
+            {
+                int p = b.Positive.CompareTo(a.Positive);
+                if (p != 0) return p;
+                return string.Compare(a.Name, b.Name, StringComparison.CurrentCulture);
+            });
+
+            _cboAddTrait.BeginUpdate();
+            _cboAddTrait.Items.Clear();
+            for (int i = 0; i < _catalogTraits.Count; i++)
+                _cboAddTrait.Items.Add(_catalogTraits[i]);
+            _cboAddTrait.EndUpdate();
+            if (_cboAddTrait.Items.Count > 0)
+                _cboAddTrait.SelectedIndex = 0;
         }
 
         void LoadDupes()
@@ -303,11 +405,18 @@ namespace ONITrainer
                     {
                         string[] tp = trs[t].Split(':');
                         if (tp.Length < 2) continue;
+                        string tdesc = tp.Length > 3 ? tp[3] : "";
+                        if (string.IsNullOrEmpty(tdesc))
+                        {
+                            TraitEntry cat = _catalogTraits.Find(x => string.Equals(x.Id, tp[0], StringComparison.OrdinalIgnoreCase));
+                            if (cat != null) tdesc = cat.Description;
+                        }
                         dr.Traits.Add(new TraitEntry
                         {
                             Id = tp[0],
                             Name = tp[1],
-                            Positive = tp.Length > 2 && tp[2] == "1"
+                            Positive = tp.Length > 2 && tp[2] == "1",
+                            Description = tdesc
                         });
                     }
                 }
@@ -345,6 +454,10 @@ namespace ONITrainer
             }
             for (int i = 0; i < dr.Traits.Count; i++)
                 _lstTraits.Items.Add(dr.Traits[i]);
+            if (_lstTraits.Items.Count > 0)
+                _lstTraits.SelectedIndex = 0;
+            else
+                ShowTraitDescription(_cboAddTrait.SelectedItem as TraitEntry);
         }
 
         void ApplyAttributes()
@@ -386,6 +499,30 @@ namespace ONITrainer
                 _lblStatus.ForeColor = C(ACC);
                 if (applied > 0 && _log != null)
                     _log("[高级] 已修改「" + dr.Name + "」的 " + applied + " 项属性等级");
+            }
+        }
+
+        void AddSelectedTrait()
+        {
+            DupeRecord dr = _cboDupe.SelectedItem as DupeRecord;
+            TraitEntry te = _cboAddTrait != null ? (_cboAddTrait.SelectedItem as TraitEntry) : null;
+            if (dr == null || te == null || _bridge == null) return;
+
+            string err;
+            string res = _bridge.RunHelperCmd(
+                string.Format(CultureInfo.InvariantCulture, "ADDTRAIT {0} {1}", dr.InstId, te.Id),
+                out err);
+            if (res != null)
+            {
+                _lblStatus.Text = "已添加特质：" + te.Name;
+                _lblStatus.ForeColor = C(ACC);
+                if (_log != null) _log("[高级] 已为「" + dr.Name + "」添加特质：" + te.Name);
+                LoadDupes();
+            }
+            else
+            {
+                _lblStatus.Text = "添加失败：" + (err ?? "未知错误");
+                _lblStatus.ForeColor = C(ERR);
             }
         }
 

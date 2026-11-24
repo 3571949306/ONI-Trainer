@@ -26,7 +26,9 @@ namespace ONITrainer
         public int Index;
         public string Id;
         public string NameKey;
+        public string DescriptionKey;
         public string DisplayName;
+        public string Description;
         public string ColorHex;
         public List<string> ForbiddenDlcIds = new List<string>();
         public List<string> ExclusiveWith = new List<string>();
@@ -496,6 +498,13 @@ namespace ONITrainer
                     string stem = Path.GetFileNameWithoutExtension(files[i]);
                     t.Id = ReleaseOrderScopes[d] + "traits/" + stem;
                     t.DisplayName = Translate(t.NameKey, stem);
+                    string descKey = t.DescriptionKey;
+                    if (string.IsNullOrEmpty(descKey) && !string.IsNullOrEmpty(t.NameKey) &&
+                        t.NameKey.EndsWith(".NAME", StringComparison.Ordinal))
+                    {
+                        descKey = t.NameKey.Substring(0, t.NameKey.Length - 5) + ".DESCRIPTION";
+                    }
+                    t.Description = Translate(descKey, "").Replace("\\n", " ").Trim();
                     t.Index = ActiveTraits.Count;
                     ActiveTraits.Add(t);
                     TraitsById[t.Id] = t;
@@ -554,6 +563,7 @@ namespace ONITrainer
                             string k = s.Substring(0, colon).Trim();
                             string v = s.Substring(colon + 1).Trim();
                             if (k == "name") t.NameKey = v.Trim('"', '\'');
+                            else if (k == "description") t.DescriptionKey = v.Trim('"', '\'');
                             else if (k == "colorHex") t.ColorHex = v.Trim('"', '\'');
                             else if (k == "forbiddenDLCIds" || k == "exclusiveWith" || k == "exclusiveWithTags" || k == "traitTags")
                             {

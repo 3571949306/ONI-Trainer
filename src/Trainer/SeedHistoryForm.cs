@@ -196,6 +196,12 @@ namespace ONITrainer
                 string summary = r.TraitSummary ?? "";
                 if (!string.IsNullOrEmpty(r.PoiSummary))
                     summary = string.IsNullOrEmpty(summary) ? r.PoiSummary : (summary + " | " + r.PoiSummary);
+                if (_showingFavorites)
+                {
+                    int pc = SeedStore.GetSavedPreviewCount(r.Coordinate, r.Seed);
+                    if (pc > 0)
+                        summary = string.IsNullOrEmpty(summary) ? ("[含 " + pc + " 星预览]") : (summary + "  [含 " + pc + " 星预览]");
+                }
                 ListViewItem lvi = new ListViewItem(r.Coordinate);
                 lvi.SubItems.Add(r.ClusterName);
                 lvi.SubItems.Add(summary);

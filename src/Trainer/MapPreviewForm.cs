@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Globalization;
 using System.Threading;
 using System.Windows.Forms;
@@ -24,6 +25,8 @@ namespace ONITrainer
         readonly string _storyArg;
         readonly string _mixingCode;
         readonly Func<BridgePreviewState> _getBridge;
+        readonly Action<MapPreviewData> _onPreviewReady;
+        readonly Func<SeedRecord> _buildSeedRecord;
         readonly List<WorldPlacementDef> _orderedPlacements;
         readonly Dictionary<int, MapPreviewData> _cache = new Dictionary<int, MapPreviewData>();
 
@@ -33,7 +36,7 @@ namespace ONITrainer
         CheckBox[] _catChecks;
         readonly string[] _catKeys = { "metal_volcano", "volcano", "water_geyser", "gas_geyser", "oil", "story", "poi" };
         readonly string[] _catNames = { "金属火山", "火山", "水源/液泉", "气体喷口", "油井", "故事特质", "遗迹/传送" };
-        Button _btnRetry, _btnExportPng, _btnOverview;
+        Button _btnRetry, _btnExportPng, _btnExportAllPng, _btnOverview, _btnFav;
         ListBox _lstPois;
         MapCanvas _canvas;
         ClusterOverviewForm _overviewForm;
@@ -43,9 +46,11 @@ namespace ONITrainer
         MapRenderMode _renderMode = MapRenderMode.BiomeTerrain;
         bool _suppressEvents;
         volatile bool _closing;
+        volatile bool _exportingAll;
         int _loadGenSeq;
         int _targetWorldIndex;
         Action _advChangedHandler;
+        Action _storeChangedHandler;
 
         public MapPreviewForm(
             ClusterDef cluster,
@@ -55,7 +60,7 @@ namespace ONITrainer
             Func<BridgePreviewState> getBridge,
             Dictionary<int, MapPreviewData> initialCache,
             int initialWorldIndex)
-            : this(cluster, seed, coordinate, activeDlcCsv, "", "", getBridge, initialCache, initialWorldIndex)
+            : this(cluster, seed, coordinate, activeDlcCsv, "", "", getBridge, initialCache, initialWorldIndex, null, null)
         {
         }
 
@@ -69,6 +74,22 @@ namespace ONITrainer
             Func<BridgePreviewState> getBridge,
             Dictionary<int, MapPreviewData> initialCache,
             int initialWorldIndex)
+            : this(cluster, seed, coordinate, activeDlcCsv, storyArg, mixingCode, getBridge, initialCache, initialWorldIndex, null, null)
+        {
+        }
+
+        public MapPreviewForm(
+            ClusterDef cluster,
+            int seed,
+            string coordinate,
+            string activeDlcCsv,
+            string storyArg,
+            string mixingCode,
+            Func<BridgePreviewState> getBridge,
+            Dictionary<int, MapPreviewData> initialCache,
+            int initialWorldIndex,
+            Action<MapPreviewData> onPreviewReady,
+            Func<SeedRecord> buildSeedRecord)
         {
             _cluster = cluster;
             _seed = seed;
@@ -77,6 +98,8 @@ namespace ONITrainer
             _storyArg = storyArg ?? "";
             _mixingCode = mixingCode ?? "";
             _getBridge = getBridge;
+            _onPreviewReady = onPreviewReady;
+            _buildSeedRecord = buildSeedRecord;
             _orderedPlacements = cluster != null ? cluster.GetOrderedPlacements() : new List<WorldPlacementDef>();
             _targetWorldIndex = initialWorldIndex;
 
@@ -89,7 +112,7 @@ namespace ONITrainer
             Text = string.Format("星图与地貌预览  ·  {0}  ·  {1}",
                 cluster != null ? cluster.DisplayName : "", _coordinate);
             ClientSize = new Size(1080, 680);
-            MinimumSize = new Size(880, 560);
+            MinimumSize = new Size(960, 560);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = C(BG);
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -103,7 +126,10 @@ namespace ONITrainer
 
             _advChangedHandler = OnGlobalAdvancedModeChanged;
             TrainerSettings.AdvancedModeChanged += _advChangedHandler;
+            _storeChangedHandler = OnStoreChanged;
+            SeedStore.StoreChanged += _storeChangedHandler;
             ApplyAdvancedModeVisibility();
+            UpdateFavButtonState();
 
             PopulatePlanetSelector();
         }
@@ -120,8 +146,8 @@ namespace ONITrainer
                 Text = _coordinate,
                 ForeColor = C(ACC),
                 Font = new Font("Consolas", 9.5F, FontStyle.Bold),
-                Location = new Point(12, 13),
-                Size = new Size(196, 22),
+                Location = new Point(10, 13),
+                Size = new Size(146, 22),
                 AutoEllipsis = true
             };
             _topBar.Controls.Add(_lblCoord);
@@ -130,14 +156,14 @@ namespace ONITrainer
             {
                 Text = "小行星",
                 ForeColor = C(TXT),
-                Location = new Point(212, 14),
-                Size = new Size(44, 20)
+                Location = new Point(160, 14),
+                Size = new Size(42, 20)
             });
 
             _cboPlanet = new ComboBox
             {
-                Location = new Point(258, 11),
-                Size = new Size(172, 26),
+                Location = new Point(204, 11),
+                Size = new Size(134, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = C(INPUT),
                 ForeColor = C(TXT),
@@ -147,32 +173,41 @@ namespace ONITrainer
             _cboPlanet.SelectedIndexChanged += (s, e) => OnPlanetChanged();
             _topBar.Controls.Add(_cboPlanet);
 
-            Button btnZoomIn = B("+", 436, 10, 28, 27, false);
+            Button btnZoomIn = B("+", 342, 10, 26, 27, false);
             btnZoomIn.Click += (s, e) => _canvas.StepZoom(1.3f);
-            Button btnZoomOut = B("-", 468, 10, 28, 27, false);
+            Button btnZoomOut = B("-", 372, 10, 26, 27, false);
             btnZoomOut.Click += (s, e) => _canvas.StepZoom(1f / 1.3f);
-            Button btnFit = B("适应窗口", 500, 10, 68, 27, false);
+            Button btnFit = B("适应", 402, 10, 44, 27, false);
             btnFit.Click += (s, e) => _canvas.ResetFit();
-            Button btnReload = B("重新生成", 572, 10, 70, 27, false);
+            Button btnReload = B("重生成", 450, 10, 54, 27, false);
             btnReload.Click += (s, e) => ReloadCurrentPlanet(true);
-            _btnOverview = B("整星群总览", 646, 10, 92, 27, true);
+            _btnOverview = B("整星群总览", 508, 10, 78, 27, true);
             _btnOverview.Click += (s, e) => OpenClusterOverview();
+            _btnExportPng = B("导出高清图", 590, 10, 78, 27, false);
+            _btnExportPng.Click += (s, e) => ExportPng();
+            _btnExportAllPng = B("导出全星群", 672, 10, 78, 27, false);
+            _btnExportAllPng.Click += (s, e) => ExportAllPlanetsPng();
+            _btnFav = B("★ 收藏", 754, 10, 70, 27, false);
+            _btnFav.Click += (s, e) => ToggleFavoriteFromPreview();
 
             _topBar.Controls.Add(btnZoomIn);
             _topBar.Controls.Add(btnZoomOut);
             _topBar.Controls.Add(btnFit);
             _topBar.Controls.Add(btnReload);
             _topBar.Controls.Add(_btnOverview);
+            _topBar.Controls.Add(_btnExportPng);
+            _topBar.Controls.Add(_btnExportAllPng);
+            _topBar.Controls.Add(_btnFav);
 
             _lblMeta = new Label
             {
                 Text = "准备加载…",
                 ForeColor = C(SUB),
                 TextAlign = ContentAlignment.MiddleRight,
-                Location = new Point(744, 13),
-                Size = new Size(322, 22),
+                Location = new Point(830, 13),
+                Size = new Size(240, 22),
                 AutoEllipsis = true,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
             _topBar.Controls.Add(_lblMeta);
 
@@ -225,11 +260,6 @@ namespace ONITrainer
                 _advBar.Controls.Add(cb);
                 cx += cwidths[i] + 4;
             }
-
-            _btnExportPng = B("导出 PNG…", 974, 5, 92, 26, true);
-            _btnExportPng.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _btnExportPng.Click += (s, e) => ExportPng();
-            _advBar.Controls.Add(_btnExportPng);
 
 
             _statusBar = new Panel { Dock = DockStyle.Bottom, Height = 28, BackColor = C(CARD) };
@@ -365,6 +395,57 @@ namespace ONITrainer
             return b;
         }
 
+        void OnStoreChanged()
+        {
+            if (_closing || IsDisposed || !IsHandleCreated) return;
+            try { BeginInvoke((Action)UpdateFavButtonState); } catch { }
+        }
+
+        void UpdateFavButtonState()
+        {
+            if (_btnFav == null) return;
+            bool isFav = SeedStore.IsFavorite(_coordinate, _seed);
+            _btnFav.Text = isFav ? "☆ 已收藏" : "★ 收藏";
+            _btnFav.BackColor = isFav ? C(0x2F4B41) : C(BTN);
+            _btnFav.ForeColor = isFav ? C(ACC) : C(TXT);
+        }
+
+        void ToggleFavoriteFromPreview()
+        {
+            if (_seed <= 0) return;
+            if (SeedStore.IsFavorite(_coordinate, _seed))
+            {
+                SeedStore.RemoveFavorite(_coordinate, _seed);
+                UpdateFavButtonState();
+                _lblHover.Text = "已从收藏夹移除：" + _coordinate;
+                _lblHover.ForeColor = C(SUB);
+                return;
+            }
+
+            SeedRecord rec = _buildSeedRecord != null ? _buildSeedRecord() : null;
+            if (rec == null)
+            {
+                rec = new SeedRecord
+                {
+                    Seed = _seed,
+                    Coordinate = _coordinate,
+                    ClusterPath = _cluster != null ? _cluster.FilePath : "",
+                    ClusterName = _cluster != null ? _cluster.DisplayName : "",
+                    TraitSummary = _curData != null ? _curData.TraitsSummary : ""
+                };
+            }
+            Dictionary<int, MapPreviewData> snap = new Dictionary<int, MapPreviewData>();
+            lock (_cache)
+            {
+                foreach (KeyValuePair<int, MapPreviewData> kv in _cache)
+                    if (kv.Value != null) snap[kv.Key] = kv.Value;
+            }
+            SeedStore.UpsertFavorite(rec, snap);
+            UpdateFavButtonState();
+            _lblHover.Text = "已收藏本种子全部信息" + (snap.Count > 0 ? ("（含 " + snap.Count + " 颗星球预览数据）") : "");
+            _lblHover.ForeColor = C(ACC);
+        }
+
         void OnGlobalAdvancedModeChanged()
         {
             if (_closing || IsDisposed || !IsHandleCreated) return;
@@ -462,19 +543,8 @@ namespace ONITrainer
                     SetUi(() =>
                     {
                         if (mySeq != _loadGenSeq) return;
-                        ShowOverlay("请先启动《缺氧》游戏并停留在「主菜单」（无需进入存档）\r\n修改器会自动连接后即可点击「重试生成」。", true, true);
+                        ShowOverlay("请先启动《缺氧》游戏（主菜单或存档内均可）\r\n修改器连接游戏后点击「重试生成」。", true, true);
                         _lblMeta.Text = "未连接游戏";
-                        _lblMeta.ForeColor = C(WARN);
-                    });
-                    return;
-                }
-                if (state.InSave)
-                {
-                    SetUi(() =>
-                    {
-                        if (mySeq != _loadGenSeq) return;
-                        ShowOverlay("当前游戏已进入殖民地存档。\r\n为避免影响存档数据，请先在游戏内「返回主菜单」，再点击「重试生成」。", true, true);
-                        _lblMeta.Text = "需返回主菜单";
                         _lblMeta.ForeColor = C(WARN);
                     });
                     return;
@@ -483,6 +553,9 @@ namespace ONITrainer
                 string err;
                 MapPreviewData data = state.Bridge.GenerateMapPreview(
                     _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+
+                if (data != null && SeedStore.IsFavorite(_coordinate, _seed))
+                    SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, data);
 
                 SetUi(() =>
                 {
@@ -495,6 +568,7 @@ namespace ONITrainer
                         return;
                     }
                     lock (_cache) { _cache[worldIndex] = data; }
+                    if (_onPreviewReady != null) _onPreviewReady(data);
                     ShowPreviewData(data);
                 });
             });
@@ -569,6 +643,7 @@ namespace ONITrainer
         {
             HideOverlay();
             _curData = data;
+            if (_btnExportPng != null) _btnExportPng.Enabled = true;
             string traits = string.IsNullOrEmpty(data.TraitsSummary) ? "无特质" : data.TraitsSummary;
             _lblMeta.Text = string.Format(CultureInfo.InvariantCulture, "{0}×{1} · 耗时 {2:0.00}s · {3}",
                 data.Width, data.Height, data.ElapsedMs / 1000.0, traits);
@@ -772,32 +847,624 @@ namespace ONITrainer
 
         void ExportPng()
         {
-            if (_curData == null || _curBitmap == null) return;
+            if (_curData == null || _curBitmap == null)
+            {
+                MessageBox.Show(this, "当前尚未加载完成地图预览，请等待生成完成后再导出。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             using (SaveFileDialog sfd = new SaveFileDialog())
             {
-                sfd.Filter = "PNG 图片 (*.png)|*.png";
-                sfd.FileName = string.Format("{0}_{1}_w{2}.png", _cluster.CoordinatePrefix, _seed, _curData.WorldIndex);
+                sfd.Filter = "PNG 高清图片 (*.png)|*.png";
+                sfd.FileName = string.Format("{0}_{1}_w{2}_{3}.png",
+                    _cluster != null ? _cluster.CoordinatePrefix : "ONI",
+                    _seed, _curData.WorldIndex,
+                    (_curData.WorldName ?? "world").Replace('/', '_'));
                 if (sfd.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
-                    int scale = 3;
-                    using (Bitmap outBmp = new Bitmap(_curData.Width * scale, _curData.Height * scale, PixelFormat.Format32bppArgb))
+                    int scale = Math.Max(4, Math.Min(6, 1600 / Math.Max(1, _curData.Width)));
+                    int mapDrawW = _curData.Width * scale;
+                    int mapDrawH = _curData.Height * scale;
+                    int bannerH = 54;
+                    int legendH = 38;
+                    int imgW = Math.Max(960, mapDrawW);
+                    int imgH = bannerH + mapDrawH + legendH;
+                    float mapOffX = (imgW - mapDrawW) * 0.5f;
+
+                    string modeName = _renderMode == MapRenderMode.ElementOnly ? "纯元素色"
+                        : (_renderMode == MapRenderMode.Temperature ? "温度热力图" : "生态地形");
+                    string traits = string.IsNullOrEmpty(_curData.TraitsSummary) ? "无特质" : _curData.TraitsSummary;
+
+                    using (Bitmap outBmp = new Bitmap(imgW, imgH, PixelFormat.Format32bppArgb))
                     using (Graphics g = Graphics.FromImage(outBmp))
+                    using (Font fTitle = new Font("Microsoft YaHei UI", 12.5F, FontStyle.Bold))
+                    using (Font fSub = new Font("Microsoft YaHei UI", 9.5F))
+                    using (SolidBrush brBg = new SolidBrush(C(0x0E1015)))
+                    using (SolidBrush brBar = new SolidBrush(C(CARD)))
+                    using (SolidBrush brAcc = new SolidBrush(C(ACC)))
+                    using (SolidBrush brTxt = new SolidBrush(C(TXT)))
+                    using (SolidBrush brSub = new SolidBrush(C(SUB)))
                     {
+                        g.Clear(C(0x0E1015));
+                        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                        g.FillRectangle(brBar, 0, 0, imgW, bannerH);
+
+                        g.DrawString(string.Format("《缺氧》高清星图  ·  {0}  ·  {1}", _coordinate, _curData.WorldName),
+                            fTitle, brAcc, 14f, 6f);
+                        g.DrawString(string.Format("尺寸 {0}×{1}（{2}× HD）  |  图层：{3}  |  特质：{4}",
+                            _curData.Width, _curData.Height, scale, modeName, traits),
+                            fSub, brTxt, 14f, 30f);
+
                         g.InterpolationMode = InterpolationMode.NearestNeighbor;
                         g.PixelOffsetMode = PixelOffsetMode.Half;
-                        g.DrawImage(_curBitmap, new Rectangle(0, 0, outBmp.Width, outBmp.Height));
-                        _canvas.DrawOverlayTo(g, 0f, 0f, scale, _curData.Width, _curData.Height);
+                        g.DrawImage(_curBitmap, new RectangleF(mapOffX, bannerH, mapDrawW, mapDrawH));
+
+                        using (Pen mapBd = new Pen(C(0x3E4352), 1f))
+                            g.DrawRectangle(mapBd, mapOffX, bannerH, mapDrawW - 1, mapDrawH - 1);
+
+                        _canvas.DrawOverlayTo(g, mapOffX, bannerH, scale, _curData.Width, _curData.Height, true);
+
+                        g.FillRectangle(brBar, 0, bannerH + mapDrawH, imgW, legendH);
+                        g.DrawString(_lblPoiSummary != null ? _lblPoiSummary.Text : "",
+                            fSub, brSub, 14f, bannerH + mapDrawH + 10f);
+
                         outBmp.Save(sfd.FileName, ImageFormat.Png);
                     }
-                    _lblHover.Text = "已导出高分辨率地图到：" + sfd.FileName;
+                    _lblHover.Text = "已导出高清星图到：" + sfd.FileName;
                     _lblHover.ForeColor = C(ACC);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "导出 PNG 失败：" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, "导出高清图失败：" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
+        }
+
+        sealed class CombinedSlot
+        {
+            public string HeaderTitle;
+            public MapPreviewData Data;
+            public int MapWidth;
+            public int MapHeight;
+        }
+
+        void ExportAllPlanetsPng()
+        {
+            if (_exportingAll) return;
+            if (_orderedPlacements.Count == 0 && _curData == null)
+            {
+                MessageBox.Show(this, "当前没有可导出的星群数据。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            List<int> missingIndices = new List<int>();
+            int cachedCount = 0;
+            lock (_cache)
+            {
+                for (int i = 0; i < _orderedPlacements.Count; i++)
+                {
+                    int pi = _orderedPlacements[i].PlacementIndex;
+                    MapPreviewData existing;
+                    if (_cache.TryGetValue(pi, out existing) && existing != null) cachedCount++;
+                    else missingIndices.Add(pi);
+                }
+            }
+
+            BridgePreviewState initialState = _getBridge != null ? _getBridge() : null;
+            bool hasBridge = (initialState != null && initialState.Bridge != null);
+            if (missingIndices.Count > 0 && !hasBridge)
+            {
+                if (cachedCount == 0)
+                {
+                    MessageBox.Show(this,
+                        "当前未连接《缺氧》游戏且无离线缓存。\r\n请先启动游戏再点击「导出全星群」。",
+                        "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                DialogResult dr = MessageBox.Show(this,
+                    string.Format("当前未连接游戏，尚有 {0} 颗小行星未生成。\r\n是否仅将已缓存的 {1} 颗小行星合并导出为大图？",
+                        missingIndices.Count, cachedCount),
+                    "导出全星群确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (dr != DialogResult.Yes) return;
+            }
+
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Filter = "PNG 高清大图 (*.png)|*.png";
+                sfd.FileName = string.Format("{0}_{1}_ALL.png",
+                    _cluster != null ? _cluster.CoordinatePrefix : "ONI", _seed);
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+                string outPath = sfd.FileName;
+                _exportingAll = true;
+                if (_btnExportAllPng != null) _btnExportAllPng.Enabled = false;
+                HashSet<string> allowed = ActiveCategoryFilter();
+                MapRenderMode modeSnap = _renderMode;
+
+                Thread t = new Thread(() =>
+                {
+                    int failedCount = 0;
+                    int totalCount = _orderedPlacements.Count;
+                    try
+                    {
+                        for (int i = 0; i < _orderedPlacements.Count; i++)
+                        {
+                            if (_closing) return;
+                            WorldPlacementDef wp = _orderedPlacements[i];
+                            int pi = wp.PlacementIndex;
+                            MapPreviewData existing;
+                            lock (_cache) { _cache.TryGetValue(pi, out existing); }
+                            if (existing != null) continue;
+
+                            BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                            if (st == null || st.Bridge == null) break;
+
+                            string wname = wp.World != null ? wp.World.DisplayName : wp.WorldId;
+                            int idx1 = i + 1;
+                            SetUi(() =>
+                            {
+                                if (_lblMeta != null)
+                                {
+                                    _lblMeta.Text = string.Format("导出全星群 ({0}/{1})：{2}…", idx1, totalCount, wname);
+                                    _lblMeta.ForeColor = C(WARN);
+                                }
+                                if (_lblHover != null)
+                                {
+                                    _lblHover.Text = string.Format("正在生成全星群地图 ({0}/{1})：{2}…", idx1, totalCount, wname);
+                                    _lblHover.ForeColor = C(WARN);
+                                }
+                            });
+
+                            string err;
+                            MapPreviewData generated = st.Bridge.GenerateMapPreview(
+                                _cluster != null ? _cluster.FilePath : "",
+                                _seed, pi, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                            if (generated != null)
+                            {
+                                lock (_cache) { _cache[pi] = generated; }
+                                if (SeedStore.IsFavorite(_coordinate, _seed))
+                                    SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, generated);
+                                if (_onPreviewReady != null)
+                                {
+                                    MapPreviewData cap = generated;
+                                    SetUi(() => _onPreviewReady(cap));
+                                }
+                            }
+                            else
+                            {
+                                failedCount++;
+                            }
+                        }
+
+                        if (_closing) return;
+
+                        SetUi(() =>
+                        {
+                            if (_lblMeta != null) { _lblMeta.Text = "正在合成全星群高清大图…"; _lblMeta.ForeColor = C(WARN); }
+                            if (_lblHover != null) { _lblHover.Text = "正在排版并保存全星群高清大图，请稍候…"; _lblHover.ForeColor = C(WARN); }
+                        });
+
+                        Dictionary<int, MapPreviewData> snap = new Dictionary<int, MapPreviewData>();
+                        lock (_cache)
+                        {
+                            foreach (KeyValuePair<int, MapPreviewData> kv in _cache)
+                                if (kv.Value != null) snap[kv.Key] = kv.Value;
+                        }
+
+                        int imgW, imgH;
+                        using (Bitmap big = RenderCombinedClusterBitmap(_cluster, _coordinate, _orderedPlacements, snap, modeSnap, allowed))
+                        {
+                            imgW = big.Width;
+                            imgH = big.Height;
+                            big.Save(outPath, ImageFormat.Png);
+                        }
+
+                        SetUi(() =>
+                        {
+                            _exportingAll = false;
+                            if (_btnExportAllPng != null) _btnExportAllPng.Enabled = true;
+                            string warnNote = failedCount > 0 ? string.Format("（{0} 颗未生成）", failedCount) : "";
+                            if (_lblMeta != null)
+                            {
+                                _lblMeta.Text = string.Format("全星群已导出 {0}×{1}{2}", imgW, imgH, warnNote);
+                                _lblMeta.ForeColor = C(ACC);
+                            }
+                            if (_lblHover != null)
+                            {
+                                _lblHover.Text = string.Format("已导出全星群高清大图 ({0}×{1}) 到：{2}{3}", imgW, imgH, outPath, warnNote);
+                                _lblHover.ForeColor = C(ACC);
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        SetUi(() =>
+                        {
+                            _exportingAll = false;
+                            if (_btnExportAllPng != null) _btnExportAllPng.Enabled = true;
+                            if (_lblMeta != null) { _lblMeta.Text = "全星群导出失败"; _lblMeta.ForeColor = C(ERR); }
+                            MessageBox.Show(this, "导出全星群高清大图失败：" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        });
+                    }
+                });
+                t.IsBackground = true;
+                t.Start();
+            }
+        }
+
+        public static Bitmap RenderCombinedClusterBitmap(
+            ClusterDef cluster,
+            string coordinate,
+            IList<WorldPlacementDef> orderedPlacements,
+            IDictionary<int, MapPreviewData> mapsByWorldIndex,
+            MapRenderMode renderMode,
+            HashSet<string> allowedCategories)
+        {
+            List<CombinedSlot> slots = new List<CombinedSlot>();
+            if (orderedPlacements != null && orderedPlacements.Count > 0)
+            {
+                for (int i = 0; i < orderedPlacements.Count; i++)
+                {
+                    WorldPlacementDef wp = orderedPlacements[i];
+                    MapPreviewData md = null;
+                    if (mapsByWorldIndex != null)
+                        mapsByWorldIndex.TryGetValue(wp.PlacementIndex, out md);
+                    string wname = wp.World != null ? wp.World.DisplayName
+                        : (md != null && !string.IsNullOrEmpty(md.WorldName) ? md.WorldName : wp.WorldId);
+                    slots.Add(new CombinedSlot
+                    {
+                        HeaderTitle = string.Format("#{0} [{1}] {2}", i + 1, wp.GroupLabel(), wname),
+                        Data = md,
+                        MapWidth = md != null ? Math.Max(1, md.Width) : 128,
+                        MapHeight = md != null ? Math.Max(1, md.Height) : 128
+                    });
+                }
+            }
+            else if (mapsByWorldIndex != null && mapsByWorldIndex.Count > 0)
+            {
+                List<int> keys = new List<int>(mapsByWorldIndex.Keys);
+                keys.Sort();
+                for (int i = 0; i < keys.Count; i++)
+                {
+                    MapPreviewData md = mapsByWorldIndex[keys[i]];
+                    if (md == null) continue;
+                    string wname = !string.IsNullOrEmpty(md.WorldName) ? md.WorldName : ("小行星 " + keys[i]);
+                    slots.Add(new CombinedSlot
+                    {
+                        HeaderTitle = string.Format("#{0} {1}", i + 1, wname),
+                        Data = md,
+                        MapWidth = Math.Max(1, md.Width),
+                        MapHeight = Math.Max(1, md.Height)
+                    });
+                }
+            }
+
+            if (slots.Count == 0)
+            {
+                Bitmap emptyBmp = new Bitmap(960, 220, PixelFormat.Format32bppArgb);
+                using (Graphics eg = Graphics.FromImage(emptyBmp))
+                using (Font ef = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold))
+                using (SolidBrush brTxt = new SolidBrush(Color.FromArgb(0xEC, 0xEE, 0xF2)))
+                {
+                    eg.Clear(Color.FromArgb(0x0E, 0x10, 0x15));
+                    eg.DrawString("暂无可导出的小行星预览数据", ef, brTxt, 24f, 92f);
+                }
+                return emptyBmp;
+            }
+
+            int n = slots.Count;
+            int cols = n <= 1 ? 1 : (n <= 4 ? 2 : (n <= 9 ? 3 : 4));
+            int rows = (n + cols - 1) / cols;
+
+            int[] colMaxW = new int[cols];
+            int[] rowMaxH = new int[rows];
+            for (int i = 0; i < n; i++)
+            {
+                int r = i / cols;
+                int c = i % cols;
+                if (slots[i].MapWidth > colMaxW[c]) colMaxW[c] = slots[i].MapWidth;
+                if (slots[i].MapHeight > rowMaxH[r]) rowMaxH[r] = slots[i].MapHeight;
+            }
+
+            const int outerPad = 20;
+            const int gutter = 18;
+            const int bannerH = 74;
+            const int cardPadX = 12;
+            const int cardHdrH = 54;
+            const int cardFtrH = 34;
+            const int minCardW = 420;
+
+            int chosenScale = 1;
+            int[] colW = new int[cols];
+            int[] rowH = new int[rows];
+            int imgW = 960;
+            int imgH = 400;
+
+            for (int candidateScale = 4; candidateScale >= 1; candidateScale--)
+            {
+                int sumW = outerPad * 2 + (cols - 1) * gutter;
+                for (int c = 0; c < cols; c++)
+                {
+                    colW[c] = Math.Max(minCardW, colMaxW[c] * candidateScale + cardPadX * 2);
+                    sumW += colW[c];
+                }
+                if (sumW < 960) sumW = 960;
+
+                int sumH = bannerH + outerPad * 2 + (rows - 1) * gutter;
+                for (int r = 0; r < rows; r++)
+                {
+                    rowH[r] = cardHdrH + rowMaxH[r] * candidateScale + cardFtrH + 8;
+                    sumH += rowH[r];
+                }
+
+                if (candidateScale == 1 ||
+                    (sumW <= 12000 && sumH <= 12000 && (long)sumW * sumH <= 64000000L))
+                {
+                    chosenScale = candidateScale;
+                    imgW = sumW;
+                    imgH = sumH;
+                    break;
+                }
+            }
+
+            int[] colX = new int[cols];
+            int curX = outerPad;
+            for (int c = 0; c < cols; c++)
+            {
+                colX[c] = curX;
+                curX += colW[c] + gutter;
+            }
+            int[] rowY = new int[rows];
+            int curY = bannerH + outerPad;
+            for (int r = 0; r < rows; r++)
+            {
+                rowY[r] = curY;
+                curY += rowH[r] + gutter;
+            }
+
+            int loadedCount = 0;
+            int totMv = 0, totVol = 0, totWat = 0, totGas = 0, totOil = 0, totPoi = 0;
+            for (int i = 0; i < n; i++)
+            {
+                MapPreviewData md = slots[i].Data;
+                if (md == null) continue;
+                loadedCount++;
+                for (int p = 0; p < md.Pois.Count; p++)
+                {
+                    string cat = md.Pois[p].Category;
+                    if (cat == "metal_volcano") totMv++;
+                    else if (cat == "volcano") totVol++;
+                    else if (cat == "water_geyser") totWat++;
+                    else if (cat == "gas_geyser") totGas++;
+                    else if (cat == "oil") totOil++;
+                    else if (cat == "story" || cat == "poi") totPoi++;
+                }
+            }
+
+            string clusterName = cluster != null && !string.IsNullOrEmpty(cluster.DisplayName) ? cluster.DisplayName : "星群";
+            string coordText = string.IsNullOrEmpty(coordinate) ? "" : coordinate;
+            string modeName = renderMode == MapRenderMode.ElementOnly ? "纯元素色"
+                : (renderMode == MapRenderMode.Temperature ? "温度热力图" : "生态地形");
+
+            Bitmap outBmp = new Bitmap(imgW, imgH, PixelFormat.Format32bppArgb);
+            try
+            {
+                using (Graphics g = Graphics.FromImage(outBmp))
+                using (Font fBannerTitle = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold))
+                using (Font fBannerSub = new Font("Microsoft YaHei UI", 10F))
+                using (Font fCardTitle = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold))
+                using (Font fCardSub = new Font("Microsoft YaHei UI", 8.8F))
+                using (Font fOverlay = new Font("Microsoft YaHei UI", chosenScale >= 3 ? 9F : 8F, FontStyle.Bold))
+                using (SolidBrush brBanner = new SolidBrush(Color.FromArgb(0x20, 0x22, 0x2A)))
+                using (SolidBrush brCard = new SolidBrush(Color.FromArgb(0x1B, 0x1D, 0x24)))
+                using (SolidBrush brAcc = new SolidBrush(Color.FromArgb(0x00, 0xD6, 0x8F)))
+                using (SolidBrush brTxt = new SolidBrush(Color.FromArgb(0xEC, 0xEE, 0xF2)))
+                using (SolidBrush brSub = new SolidBrush(Color.FromArgb(0x94, 0x9A, 0xA8)))
+                using (SolidBrush brWarn = new SolidBrush(Color.FromArgb(0xF2, 0xB1, 0x38)))
+                using (Pen penCardBd = new Pen(Color.FromArgb(0x3E, 0x43, 0x52), 1f))
+                using (Pen penMapBd = new Pen(Color.FromArgb(0x52, 0x58, 0x6A), 1f))
+                using (StringFormat sfLine = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter })
+                {
+                    g.Clear(Color.FromArgb(0x0E, 0x10, 0x15));
+                    g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+                    g.FillRectangle(brBanner, 0, 0, imgW, bannerH);
+                    g.DrawString(string.Format("《缺氧》全星群高清星图  ·  {0}  ·  {1}", clusterName, coordText),
+                        fBannerTitle, brAcc, new RectangleF(outerPad, 8f, imgW - outerPad * 2, 28f), sfLine);
+                    g.DrawString(string.Format(
+                        "已收录 {0}/{1} 颗小行星  |  图层：{2}  |  比例：{3}× HD  |  总计：金属火山 {4} · 火山 {5} · 水泉 {6} · 气泉 {7} · 油井 {8} · 故事/遗迹 {9}",
+                        loadedCount, n, modeName, chosenScale, totMv, totVol, totWat, totGas, totOil, totPoi),
+                        fBannerSub, brTxt, new RectangleF(outerPad, 40f, imgW - outerPad * 2, 24f), sfLine);
+
+                    for (int i = 0; i < n; i++)
+                    {
+                        int r = i / cols;
+                        int c = i % cols;
+                        int cx = colX[c];
+                        int cy = rowY[r];
+                        int cw = colW[c];
+                        int ch = rowH[r];
+                        CombinedSlot slot = slots[i];
+                        MapPreviewData md = slot.Data;
+
+                        g.FillRectangle(brCard, cx, cy, cw, ch);
+                        g.DrawRectangle(penCardBd, cx, cy, cw - 1, ch - 1);
+
+                        if (md == null)
+                        {
+                            g.DrawString(slot.HeaderTitle, fCardTitle, brWarn,
+                                new RectangleF(cx + cardPadX, cy + 8f, cw - cardPadX * 2, 22f), sfLine);
+                            g.DrawString("未能生成该小行星预览数据（已跳过）", fCardSub, brSub,
+                                new RectangleF(cx + cardPadX, cy + ch * 0.5f - 10f, cw - cardPadX * 2, 22f),
+                                new StringFormat { Alignment = StringAlignment.Center });
+                            continue;
+                        }
+
+                        string titleLine = string.Format("{0}   ({1}×{2})", slot.HeaderTitle, md.Width, md.Height);
+                        string traitsLine = "特质：" + (string.IsNullOrEmpty(md.TraitsSummary) ? "无特质" : md.TraitsSummary);
+                        g.DrawString(titleLine, fCardTitle, brAcc,
+                            new RectangleF(cx + cardPadX, cy + 6f, cw - cardPadX * 2, 22f), sfLine);
+                        g.DrawString(traitsLine, fCardSub, brTxt,
+                            new RectangleF(cx + cardPadX, cy + 30f, cw - cardPadX * 2, 20f), sfLine);
+
+                        int drawW = md.Width * chosenScale;
+                        int drawH = md.Height * chosenScale;
+                        int availW = cw - cardPadX * 2;
+                        int availH = ch - cardHdrH - cardFtrH;
+                        float mapX = cx + cardPadX + (availW - drawW) * 0.5f;
+                        float mapY = cy + cardHdrH + (availH - drawH) * 0.5f;
+
+                        g.SetClip(new RectangleF(cx + 2, cy + cardHdrH, cw - 4, availH));
+                        using (Bitmap tile = md.RenderBitmap(renderMode))
+                        {
+                            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                            g.PixelOffsetMode = PixelOffsetMode.Half;
+                            g.DrawImage(tile, new RectangleF(mapX, mapY, drawW, drawH));
+                        }
+                        g.DrawRectangle(penMapBd, mapX, mapY, drawW - 1, drawH - 1);
+
+                        List<MapPoiItem> visPois = new List<MapPoiItem>();
+                        int mv = 0, vol = 0, wat = 0, gas = 0, oil = 0, stPoi = 0;
+                        for (int p = 0; p < md.Pois.Count; p++)
+                        {
+                            MapPoiItem item = md.Pois[p];
+                            if (item.Category == "metal_volcano") mv++;
+                            else if (item.Category == "volcano") vol++;
+                            else if (item.Category == "water_geyser") wat++;
+                            else if (item.Category == "gas_geyser") gas++;
+                            else if (item.Category == "oil") oil++;
+                            else if (item.Category == "story" || item.Category == "poi") stPoi++;
+
+                            if (allowedCategories == null || allowedCategories.Contains(item.Category))
+                                visPois.Add(item);
+                        }
+
+                        DrawPoiOverlay(g, visPois, mapX, mapY, chosenScale, md.Width, md.Height,
+                            true, null, null, fOverlay, fOverlay);
+                        g.ResetClip();
+
+                        string foot = string.Format("金属火山 {0} · 火山 {1} · 水泉 {2} · 气泉 {3} · 油井 {4} · 故事/遗迹 {5}",
+                            mv, vol, wat, gas, oil, stPoi);
+                        g.DrawString(foot, fCardSub, brSub,
+                            new RectangleF(cx + cardPadX, cy + ch - cardFtrH + 8f, cw - cardPadX * 2, 20f), sfLine);
+                    }
+                }
+                return outBmp;
+            }
+            catch
+            {
+                outBmp.Dispose();
+                throw;
+            }
+        }
+
+        internal static void DrawPoiOverlay(
+            Graphics g,
+            IList<MapPoiItem> pois,
+            float offX,
+            float offY,
+            float scale,
+            int mapW,
+            int mapH,
+            bool exportDetail,
+            MapPoiItem selectedPoi,
+            MapPoiItem hoverPoi,
+            Font lblFont,
+            Font exportLblFont)
+        {
+            if (pois == null || pois.Count == 0) return;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            g.PixelOffsetMode = PixelOffsetMode.Default;
+
+            Font font = exportDetail ? exportLblFont : lblFont;
+            List<RectangleF> placedLabels = new List<RectangleF>();
+
+            for (int i = 0; i < pois.Count; i++)
+            {
+                MapPoiItem p = pois[i];
+                float sx = offX + (p.X + 0.5f) * scale;
+                float sy = offY + (mapH - 1 - p.Y + 0.5f) * scale;
+                Color col = CategoryColor(p.Category);
+                bool isFocus = !exportDetail && (p == selectedPoi || p == hoverPoi);
+                float r = isFocus ? 8f : (exportDetail ? (p.Category == "start" ? 9.5f : 7.5f) : (p.Category == "start" ? 7.5f : 5.5f));
+
+                if (isFocus)
+                {
+                    using (Pen halo = new Pen(Color.White, 2f))
+                        g.DrawEllipse(halo, sx - r - 4f, sy - r - 4f, (r + 4f) * 2f, (r + 4f) * 2f);
+                }
+
+                using (SolidBrush br = new SolidBrush(col))
+                using (Pen outline = new Pen(Color.FromArgb(225, 14, 16, 22), exportDetail ? 2f : 1.6f))
+                {
+                    if (p.Category == "metal_volcano" || p.Category == "volcano")
+                    {
+                        PointF[] tri =
+                        {
+                            new PointF(sx, sy - r - 1f),
+                            new PointF(sx - r, sy + r * 0.85f),
+                            new PointF(sx + r, sy + r * 0.85f)
+                        };
+                        g.FillPolygon(br, tri);
+                        g.DrawPolygon(outline, tri);
+                    }
+                    else if (p.Category == "oil")
+                    {
+                        g.FillRectangle(br, sx - r, sy - r, r * 2f, r * 2f);
+                        g.DrawRectangle(outline, sx - r, sy - r, r * 2f, r * 2f);
+                    }
+                    else if (p.Category == "story" || p.Category == "poi" || p.Category == "start")
+                    {
+                        PointF[] dia =
+                        {
+                            new PointF(sx, sy - r - 1f),
+                            new PointF(sx + r + 1f, sy),
+                            new PointF(sx, sy + r + 1f),
+                            new PointF(sx - r - 1f, sy)
+                        };
+                        g.FillPolygon(br, dia);
+                        g.DrawPolygon(outline, dia);
+                    }
+                    else
+                    {
+                        g.FillEllipse(br, sx - r, sy - r, r * 2f, r * 2f);
+                        g.DrawEllipse(outline, sx - r, sy - r, r * 2f, r * 2f);
+                    }
+                }
+
+                bool major = p.Category != "poi" || scale >= 2.0f || isFocus;
+                if (!major) continue;
+
+                string lbl = p.DisplayName;
+                if (exportDetail && p.HasGeyserStats)
+                {
+                    string gtxt = p.GradeText();
+                    lbl = string.IsNullOrEmpty(gtxt)
+                        ? (p.DisplayName + " (" + p.FormatYieldShort() + ")")
+                        : (p.DisplayName + " [" + gtxt + " " + p.FormatYieldShort() + "]");
+                }
+                SizeF sz = g.MeasureString(lbl, font);
+                RectangleF box = new RectangleF(sx + r + 4f, sy - sz.Height * 0.5f, sz.Width + 6f, sz.Height + 2f);
+                if (!isFocus && OverlapsRectAny(placedLabels, box)) continue;
+                placedLabels.Add(box);
+
+                using (SolidBrush pillBg = new SolidBrush(Color.FromArgb(isFocus ? 235 : 205, 0x16, 0x17, 0x1C)))
+                using (SolidBrush pillFg = new SolidBrush(isFocus ? Color.White : col))
+                using (Pen pillBd = new Pen(col, isFocus ? 1.3f : 0.9f))
+                {
+                    g.FillRectangle(pillBg, box);
+                    g.DrawRectangle(pillBd, box.X, box.Y, box.Width, box.Height);
+                    g.DrawString(lbl, font, pillFg, box.X + 3f, box.Y + 1f);
+                }
+            }
+        }
+
+        static bool OverlapsRectAny(List<RectangleF> list, RectangleF r)
+        {
+            for (int i = 0; i < list.Count; i++)
+                if (list[i].IntersectsWith(r)) return true;
+            return false;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -808,6 +1475,8 @@ namespace ONITrainer
                 try { _overviewForm.Close(); } catch { }
             if (_advChangedHandler != null)
                 TrainerSettings.AdvancedModeChanged -= _advChangedHandler;
+            if (_storeChangedHandler != null)
+                SeedStore.StoreChanged -= _storeChangedHandler;
             if (_curBitmap != null)
                 try { _curBitmap.Dispose(); } catch { }
             base.OnFormClosing(e);
@@ -831,6 +1500,7 @@ namespace ONITrainer
             bool _movedDuringDrag;
 
             readonly Font _lblFont = new Font("Microsoft YaHei UI", 8.2F, FontStyle.Bold);
+            readonly Font _exportLblFont = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
 
             public event Action<int, int, MapPoiItem> HoveredCellChanged;
             public event Action<MapPoiItem> PoiClicked;
@@ -1028,7 +1698,8 @@ namespace ONITrainer
                 if (_bmp == null || _data == null) return;
 
                 Graphics g = e.Graphics;
-                g.InterpolationMode = _zoom >= 1.5f ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBilinear;
+                g.InterpolationMode = _zoom >= 1.5f ? InterpolationMode.NearestNeighbor
+                    : (_zoom < 1.0f ? InterpolationMode.HighQualityBicubic : InterpolationMode.HighQualityBilinear);
                 g.PixelOffsetMode = PixelOffsetMode.Half;
 
                 float dw = _data.Width * _zoom;
@@ -1038,95 +1709,13 @@ namespace ONITrainer
                 using (Pen borderPen = new Pen(Color.FromArgb(90, 0xEC, 0xEE, 0xF2), 1f))
                     g.DrawRectangle(borderPen, _panX, _panY, dw, dh);
 
-                DrawOverlayTo(g, _panX, _panY, _zoom, _data.Width, _data.Height);
+                DrawOverlayTo(g, _panX, _panY, _zoom, _data.Width, _data.Height, false);
             }
 
-            public void DrawOverlayTo(Graphics g, float offX, float offY, float scale, int mapW, int mapH)
+            public void DrawOverlayTo(Graphics g, float offX, float offY, float scale, int mapW, int mapH, bool exportDetail)
             {
-                if (_pois == null || _pois.Count == 0) return;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.PixelOffsetMode = PixelOffsetMode.Default;
-
-                List<RectangleF> placedLabels = new List<RectangleF>();
-
-                for (int i = 0; i < _pois.Count; i++)
-                {
-                    MapPoiItem p = _pois[i];
-                    float sx = offX + (p.X + 0.5f) * scale;
-                    float sy = offY + (mapH - 1 - p.Y + 0.5f) * scale;
-                    Color col = CategoryColor(p.Category);
-                    bool isFocus = (p == _selectedPoi || p == _hoverPoi);
-                    float r = isFocus ? 8f : (p.Category == "start" ? 7.5f : 5.5f);
-
-                    if (isFocus)
-                    {
-                        using (Pen halo = new Pen(Color.White, 2f))
-                            g.DrawEllipse(halo, sx - r - 4f, sy - r - 4f, (r + 4f) * 2f, (r + 4f) * 2f);
-                    }
-
-                    using (SolidBrush br = new SolidBrush(col))
-                    using (Pen outline = new Pen(Color.FromArgb(220, 14, 16, 22), 1.6f))
-                    {
-                        if (p.Category == "metal_volcano" || p.Category == "volcano")
-                        {
-                            PointF[] tri =
-                            {
-                                new PointF(sx, sy - r - 1f),
-                                new PointF(sx - r, sy + r * 0.85f),
-                                new PointF(sx + r, sy + r * 0.85f)
-                            };
-                            g.FillPolygon(br, tri);
-                            g.DrawPolygon(outline, tri);
-                        }
-                        else if (p.Category == "oil")
-                        {
-                            g.FillRectangle(br, sx - r, sy - r, r * 2f, r * 2f);
-                            g.DrawRectangle(outline, sx - r, sy - r, r * 2f, r * 2f);
-                        }
-                        else if (p.Category == "story" || p.Category == "poi" || p.Category == "start")
-                        {
-                            PointF[] dia =
-                            {
-                                new PointF(sx, sy - r - 1f),
-                                new PointF(sx + r + 1f, sy),
-                                new PointF(sx, sy + r + 1f),
-                                new PointF(sx - r - 1f, sy)
-                            };
-                            g.FillPolygon(br, dia);
-                            g.DrawPolygon(outline, dia);
-                        }
-                        else
-                        {
-                            g.FillEllipse(br, sx - r, sy - r, r * 2f, r * 2f);
-                            g.DrawEllipse(outline, sx - r, sy - r, r * 2f, r * 2f);
-                        }
-                    }
-
-                    bool major = p.Category != "poi" || scale >= 2.2f || isFocus;
-                    if (!major) continue;
-
-                    string lbl = p.DisplayName;
-                    SizeF sz = g.MeasureString(lbl, _lblFont);
-                    RectangleF box = new RectangleF(sx + r + 4f, sy - sz.Height * 0.5f, sz.Width + 6f, sz.Height + 2f);
-                    if (!isFocus && OverlapsAny(placedLabels, box)) continue;
-                    placedLabels.Add(box);
-
-                    using (SolidBrush pillBg = new SolidBrush(Color.FromArgb(isFocus ? 235 : 185, 0x16, 0x17, 0x1C)))
-                    using (SolidBrush pillFg = new SolidBrush(isFocus ? Color.White : col))
-                    using (Pen pillBd = new Pen(col, isFocus ? 1.3f : 0.8f))
-                    {
-                        g.FillRectangle(pillBg, box);
-                        g.DrawRectangle(pillBd, box.X, box.Y, box.Width, box.Height);
-                        g.DrawString(lbl, _lblFont, pillFg, box.X + 3f, box.Y + 1f);
-                    }
-                }
-            }
-
-            static bool OverlapsAny(List<RectangleF> list, RectangleF r)
-            {
-                for (int i = 0; i < list.Count; i++)
-                    if (list[i].IntersectsWith(r)) return true;
-                return false;
+                MapPreviewForm.DrawPoiOverlay(g, _pois, offX, offY, scale, mapW, mapH,
+                    exportDetail, _selectedPoi, _hoverPoi, _lblFont, _exportLblFont);
             }
         }
     }
