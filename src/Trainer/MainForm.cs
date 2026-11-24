@@ -162,11 +162,15 @@ namespace ONITrainer
                 Location = new Point(20, 6),
                 Size = new Size(200, 28)
             });
-            top.Controls.Add(Lbl("缺氧修改器 · 自动检测游戏与存档 · 简单易用", 22, 35, 392, SUB));
+            top.Controls.Add(Lbl("缺氧修改器 · 自动检测游戏与存档 · 简单易用", 22, 35, 336, SUB));
 
-            Button btnSeed = B("开局种子筛选", 420, 13, 118, 32, false);
+            Button btnSeed = B("开局种子筛选", 362, 13, 110, 32, false);
             btnSeed.Click += (s, e) => OpenSeedFinder();
             top.Controls.Add(btnSeed);
+
+            Button btnSettings = B("设置", 478, 13, 62, 32, false);
+            btnSettings.Click += (s, e) => OpenSettings();
+            top.Controls.Add(btnSettings);
 
             Panel badge = new Panel { Location = new Point(548, 11), Size = new Size(276, 36), BackColor = C(BG) };
             _status = new Label
@@ -505,6 +509,21 @@ namespace ONITrainer
             dlcScan.Start();
         }
 
+        void OpenSettings()
+        {
+            using (SettingsForm f = new SettingsForm())
+                f.ShowDialog(this);
+        }
+
+        internal BridgePreviewState GetBridgePreviewState()
+        {
+            return new BridgePreviewState
+            {
+                Bridge = _bridge,
+                InSave = _inSave
+            };
+        }
+
         void OpenSeedFinder()
         {
             if (_seedFinderForm != null && !_seedFinderForm.IsDisposed)
@@ -512,7 +531,7 @@ namespace ONITrainer
                 _seedFinderForm.Activate();
                 return;
             }
-            _seedFinderForm = new SeedFinderForm(_detectedGameDir, _detectedDlcs);
+            _seedFinderForm = new SeedFinderForm(_detectedGameDir, _detectedDlcs, GetBridgePreviewState, OpenSettings);
             _seedFinderForm.Show(this);
         }
 
@@ -652,10 +671,10 @@ namespace ONITrainer
                     }
 
 
-                    bool inSave;
+                    bool inSave, busy;
                     long gamePtr;
                     int gw, gh;
-                    if (!_bridge.QuerySaveState(out inSave, out gamePtr, out gw, out gh))
+                    if (!_bridge.QuerySaveState(out inSave, out gamePtr, out gw, out gh, out busy))
                     {
                         if (!Bridge.IsProcessAlive(_pid)) continue;
                         if (++queryFails >= 3)
@@ -671,6 +690,11 @@ namespace ONITrainer
                         continue;
                     }
                     queryFails = 0;
+                    if (busy)
+                    {
+                        _stopWatch.Wait(500);
+                        continue;
+                    }
 
                     if (!inSave)
                     {

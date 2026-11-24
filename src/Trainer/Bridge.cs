@@ -84,6 +84,9 @@ namespace ONITrainer
             public string szExePath;
         }
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern int GetShortPathNameW(string lpszLongPath, StringBuilder lpszShortPath, int cchBuffer);
+
         const uint TH32CS_SNAPMODULE = 0x00000008;
         const uint TH32CS_SNAPMODULE32 = 0x00000010;
         const uint GENERIC_READ = 0x80000000;
@@ -98,6 +101,7 @@ namespace ONITrainer
 
         readonly object _ioLock = new object();
         string _name;
+        bool _helperLoaded;
 
         public static string RuntimeDir
         {
@@ -161,6 +165,63 @@ namespace ONITrainer
             }
         }
 
+        public static string EnsurePreviewHelperDll(out string err)
+        {
+            return EnsureEmbeddedDll("ONIPreviewHelper.dll", "ONIPreviewHelper_", "缺少预览所需组件，请重新下载修改器", out err);
+        }
+
+        static string EnsureEmbeddedDll(string resourceName, string filePrefix, string missingMsg, out string err)
+        {
+            err = null;
+            try
+            {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                using (Stream s = asm.GetManifestResourceStream(resourceName))
+                {
+                    if (s != null)
+                    {
+                        byte[] data;
+                        using (MemoryStream ms = new MemoryStream())
+                        {
+                            s.CopyTo(ms);
+                            data = ms.ToArray();
+                        }
+                        string hash8;
+                        using (SHA256 sha = SHA256.Create())
+                        {
+                            byte[] h = sha.ComputeHash(data);
+                            StringBuilder sb = new StringBuilder(8);
+                            for (int i = 0; i < 4; i++) sb.Append(h[i].ToString("x2"));
+                            hash8 = sb.ToString();
+                        }
+                        string dir = RuntimeDir;
+                        string dst = Path.Combine(dir, filePrefix + hash8 + ".dll");
+                        if (!File.Exists(dst) || new FileInfo(dst).Length != data.Length)
+                            File.WriteAllBytes(dst, data);
+                        try
+                        {
+                            foreach (string old in Directory.GetFiles(dir, filePrefix + "*.dll"))
+                            {
+                                if (!string.Equals(old, dst, StringComparison.OrdinalIgnoreCase))
+                                    try { File.Delete(old); } catch { }
+                            }
+                        }
+                        catch { }
+                        return dst;
+                    }
+                }
+                string local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, resourceName);
+                if (File.Exists(local)) return local;
+                err = missingMsg;
+                return null;
+            }
+            catch (Exception e)
+            {
+                err = "释放组件失败：" + e.Message;
+                return null;
+            }
+        }
+
         public static bool HasMonoModule(int pid)
         {
             if (pid <= 0) return false;
@@ -196,8 +257,15 @@ namespace ONITrainer
 
         public bool QuerySaveState(out bool inSave, out long gamePtr, out int width, out int height)
         {
-            inSave = false; gamePtr = 0; width = 0; height = 0;
+            bool busy;
+            return QuerySaveState(out inSave, out gamePtr, out width, out height, out busy);
+        }
+
+        public bool QuerySaveState(out bool inSave, out long gamePtr, out int width, out int height, out bool busy)
+        {
+            inSave = false; gamePtr = 0; width = 0; height = 0; busy = false;
             string r = Cmd("SAVESTATE", 400, 1000);
+            if (r == "ERR busy") { busy = true; return true; }
             if (string.IsNullOrEmpty(r) || !r.StartsWith("OK")) return false;
             if (!r.StartsWith("OK insave")) return true;
             Match mg = Regex.Match(r, @"game:([0-9a-fA-F]+)");
@@ -208,6 +276,96 @@ namespace ONITrainer
             if (mh.Success) int.TryParse(mh.Groups[1].Value, out height);
             inSave = (gamePtr != 0 && width > 0);
             return true;
+        }
+
+        static string ToShortPath(string path)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder(512);
+                int len = GetShortPathNameW(path, sb, sb.Capacity);
+                if (len > 0 && len < sb.Capacity) return sb.ToString();
+            }
+            catch { }
+            return path;
+        }
+
+        public bool EnsureHelperLoaded(out string err)
+        {
+            err = null;
+            if (_helperLoaded) return true;
+            string path = EnsurePreviewHelperDll(out err);
+            if (string.IsNullOrEmpty(path)) return false;
+            string shortPath = ToShortPath(path);
+            string resp = Cmd("LOADHELPER " + shortPath, 2000, 8000);
+            if (resp != null && resp.StartsWith("OK"))
+            {
+                _helperLoaded = true;
+                return true;
+            }
+            err = "加载地图预览功能失败：" + (resp ?? "无响应");
+            return false;
+        }
+
+        public MapPreviewData GenerateMapPreview(
+            string clusterFilePath,
+            int seed,
+            int worldIndex,
+            string activeDlcCsv,
+            string storyTraitCsv,
+            out string err)
+        {
+            err = null;
+            if (!EnsureHelperLoaded(out err)) return null;
+
+            string fileName = "preview_" + Guid.NewGuid().ToString("N") + ".bin";
+            string outPath = Path.Combine(RuntimeDir, fileName);
+            string safeOut = ToShortPath(RuntimeDir);
+            if (!string.IsNullOrEmpty(safeOut))
+                outPath = Path.Combine(safeOut, fileName);
+
+            try
+            {
+                string req = string.Format(CultureInfo.InvariantCulture,
+                    "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}",
+                    clusterFilePath ?? "",
+                    seed,
+                    worldIndex,
+                    activeDlcCsv ?? "",
+                    storyTraitCsv ?? "",
+                    outPath);
+
+                string resp = Cmd(req, 3000, 45000);
+                if (string.IsNullOrEmpty(resp))
+                {
+                    err = "游戏未响应地图预览请求，请重试";
+                    return null;
+                }
+                if (!resp.StartsWith("OK"))
+                {
+                    if (resp.Contains("in-save"))
+                        err = "当前已进入游戏存档，请先返回游戏「主菜单」再生成地图预览（以免影响当前存档）。";
+                    else
+                        err = "地图生成失败：" + resp;
+                    return null;
+                }
+                if (!File.Exists(outPath))
+                {
+                    err = "未找到预览数据，请重新生成";
+                    return null;
+                }
+                return MapPreviewData.LoadFromFile(outPath);
+            }
+            catch (Exception ex)
+            {
+                err = "读取地图预览数据失败：" + ex.Message;
+                return null;
+            }
+            finally
+            {
+                try { if (File.Exists(outPath)) File.Delete(outPath); }
+                catch { }
+            }
         }
 
         bool Ping()
@@ -438,7 +596,7 @@ namespace ONITrainer
                     if (hEvent == IntPtr.Zero) return "ERR event";
                     ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(NativeOverlapped)));
 
-                    byte[] req = Encoding.ASCII.GetBytes(cmd);
+                    byte[] req = Encoding.UTF8.GetBytes(cmd);
                     uint written;
                     if (!OverlappedIo(hPipe, hEvent, ovPtr, true, req, req.Length, ioTimeoutMs, out written))
                         return "ERR write-timeout";

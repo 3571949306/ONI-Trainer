@@ -26,6 +26,7 @@ namespace ONITrainer
         static void Main(string[] args)
         {
             EnableDpiAwareness();
+            TrainerSettings.Load();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             MainForm f = new MainForm();

@@ -28,6 +28,7 @@ typedef struct _MonoArray { void* vtable; } MonoArray;
 static MonoDomain* (*m_domain_get)(void);
 static MonoDomain* (*m_root_domain)(void);
 static void (*m_thread_attach)(MonoDomain*);
+static MonoAssembly* (*m_domain_assembly_open)(MonoDomain*, const char*);
 static void (*m_domain_assembly_foreach)(MonoDomain*, void(*)(MonoAssembly*, void*), void*);
 static MonoImage* (*m_assembly_get_image)(MonoAssembly*);
 static const char* (*m_image_get_name)(MonoImage*);
@@ -121,6 +122,7 @@ static void resolve_mono() {
     REQ(m_domain_get, "mono_domain_get");
     REQ(m_root_domain, "mono_get_root_domain");
     REQ(m_thread_attach, "mono_thread_attach");
+    REQ(m_domain_assembly_open, "mono_domain_assembly_open");
     REQ(m_domain_assembly_foreach, "mono_domain_assembly_foreach");
     REQ(m_assembly_get_image, "mono_assembly_get_image");
     REQ(m_image_get_name, "mono_image_get_name");
@@ -2185,6 +2187,10 @@ static void reply_sync(char* out, int outsz, QcCmd c, int timeoutMs) {
     }
 }
 
+static MonoImage* g_helper_img = 0;
+static MonoMethod* g_helper_preview = 0;
+static char g_helper_path[512] = {0};
+
 
 static void proc_cmd(char* buf, char* out, int outsz) {
 
@@ -2199,6 +2205,77 @@ static void proc_cmd(char* buf, char* out, int outsz) {
         if (g_ready && !g_game_update_tramp && world_instance()) { install_game_update_hook(); }
         if (g_ready) { snprintf(out, outsz, "OK ready"); }
         else snprintf(out, outsz, "ERR not-ready");
+        return;
+    }
+    if (!_strnicmp(buf, "LOADHELPER ", 11)) {
+        if (!g_ready) init();
+        if (!g_ready) { snprintf(out, outsz, "ERR not-ready"); return; }
+        const char* path = buf + 11;
+        while (*path == ' ') ++path;
+        if (!path[0]) { snprintf(out, outsz, "ERR args"); return; }
+        if (g_helper_preview && !_stricmp(g_helper_path, path)) {
+            snprintf(out, outsz, "OK loaded");
+            return;
+        }
+        if (!m_domain_assembly_open || !m_assembly_get_image) {
+            snprintf(out, outsz, "ERR no-open-api");
+            return;
+        }
+        MonoAssembly* ha = m_domain_assembly_open(g_domain, path);
+        if (!ha) {
+            logf("LOADHELPER: open failed path=%s", path);
+            snprintf(out, outsz, "ERR open-failed");
+            return;
+        }
+        MonoImage* hi = m_assembly_get_image(ha);
+        MonoClass* ec = hi ? m_class_from_name(hi, "ONIPreviewHelper", "Entry") : 0;
+        MonoMethod* em = ec ? m_class_get_method(ec, "GeneratePreview", 1) : 0;
+        if (!hi || !ec || !em) {
+            logf("LOADHELPER: missing entry hi=%p ec=%p em=%p", hi, ec, em);
+            snprintf(out, outsz, "ERR missing-entry");
+            return;
+        }
+        g_helper_img = hi;
+        g_helper_preview = em;
+        strncpy(g_helper_path, path, sizeof(g_helper_path) - 1);
+        g_helper_path[sizeof(g_helper_path) - 1] = 0;
+        logf("LOADHELPER: ok img=%p method=%p", hi, em);
+        snprintf(out, outsz, "OK loaded");
+        return;
+    }
+    if (!_strnicmp(buf, "PREVIEW ", 8)) {
+
+        if (world_instance()) {
+            snprintf(out, outsz, "ERR in-save");
+            return;
+        }
+        if (!g_ready) init();
+        if (!g_ready) { snprintf(out, outsz, "ERR not-ready"); return; }
+        if (!g_helper_preview) { snprintf(out, outsz, "ERR no-helper"); return; }
+        const char* pargs = buf + 8;
+        while (*pargs == ' ') ++pargs;
+        MonoString* ms = m_string_new(g_domain, pargs);
+        if (!ms) { snprintf(out, outsz, "ERR string"); return; }
+        void* a[1]; a[0] = ms;
+        MonoObject* exc = 0;
+        MonoObject* ret = m_runtime_invoke(g_helper_preview, 0, a, &exc);
+        if (exc) {
+            char eb[512] = {0};
+            MonoClass* ec = m_object_get_class(exc);
+            MonoMethod* ts = ec ? find_method_chain(ec, "ToString", 0) : 0;
+            if (ts) {
+                MonoObject* exc2 = 0;
+                MonoObject* er = m_runtime_invoke(ts, exc, 0, &exc2);
+                if (er && !exc2) copy_mono_string((MonoString*)er, eb, sizeof(eb));
+            }
+            if (!eb[0]) snprintf(eb, sizeof(eb), "%s", (ec && m_class_get_name) ? m_class_get_name(ec) : "?");
+            logf("PREVIEW exc: %s", eb);
+            snprintf(out, outsz, "ERR exc:%s", eb);
+            return;
+        }
+        if (!ret) { snprintf(out, outsz, "ERR null-ret"); return; }
+        copy_mono_string((MonoString*)ret, out, outsz);
+        if (!out[0]) snprintf(out, outsz, "ERR empty-ret");
         return;
     }
     if (!_stricmp(buf, "SAVESTATE")) {

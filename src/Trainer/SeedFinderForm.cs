@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -17,6 +20,8 @@ namespace ONITrainer
 
         string _gameDir;
         List<DlcEntry> _dlcs;
+        readonly Func<BridgePreviewState> _getBridge;
+        readonly Action _openSettings;
         WorldGenCatalog _catalog;
         ClusterDef _curCluster;
         List<WorldPlacementDef> _orderedPlacements = new List<WorldPlacementDef>();
@@ -28,6 +33,27 @@ namespace ONITrainer
         Thread _searchThread;
         SeedSearchResult _lastResult;
 
+        int _baseClientHeight;
+        int _advClientHeight;
+        Action _advChangedHandler;
+
+        int _previewCacheSeed;
+        readonly Dictionary<int, MapPreviewData> _previewCache = new Dictionary<int, MapPreviewData>();
+        MapPreviewForm _mapPreviewForm;
+
+        sealed class BoundPoiRule
+        {
+            public int PlacementIndex;
+            public string PlanetName;
+            public PoiFilterRule Rule;
+
+            public override string ToString()
+            {
+                return string.Format("[{0}] {1}", PlanetName, Rule.ToString());
+            }
+        }
+        readonly List<BoundPoiRule> _poiRules = new List<BoundPoiRule>();
+
         Label _lblGameDir, _lblPlanetInfo, _lblRuleHint, _lblSearchStatus, _lblSeedOnly;
         CheckBox[] _dlcChecks;
         ComboBox _cboStyle, _cboCluster;
@@ -35,12 +61,29 @@ namespace ONITrainer
         ListBox _lstPlanets;
         CheckedListBox _clbTraits;
         CheckBox _chkNoTraits;
-        Button _btnExclude, _btnClearPlanet, _btnClearAll, _btnSearch, _btnStop, _btnNext, _btnCopyCoord, _btnCopySeed;
+        Button _btnExclude, _btnClearPlanet, _btnClearAll, _btnSearch, _btnStop, _btnNext, _btnCopyCoord, _btnCopySeed, _btnPreviewMap;
+
+        GroupBox _gPoiFilter;
+        ComboBox _cboPoiPlanet, _cboPoiType;
+        NumericUpDown _numPoiCount;
+        ListBox _lstPoiRules;
+        Button _btnAddPoi, _btnClearPoi;
 
         public SeedFinderForm(string initialGameDir, List<DlcEntry> initialDlcs)
+            : this(initialGameDir, initialDlcs, null, null)
+        {
+        }
+
+        public SeedFinderForm(
+            string initialGameDir,
+            List<DlcEntry> initialDlcs,
+            Func<BridgePreviewState> getBridge,
+            Action openSettings)
         {
             _gameDir = initialGameDir;
             _dlcs = initialDlcs;
+            _getBridge = getBridge;
+            _openSettings = openSettings;
 
             Text = "开局种子 / 星球特质筛选器  ·  Oxygen Not Included";
             ClientSize = new Size(920, 622);
@@ -54,11 +97,18 @@ namespace ONITrainer
             BuildUI();
             DpiHelper.ScaleLayout(this);
             float scale = DpiHelper.GetDpiScale();
+            _baseClientHeight = ClientSize.Height;
+            _advClientHeight = (int)Math.Round(776 * scale);
             if (scale > 1.01f)
             {
                 _lstPlanets.ItemHeight = (int)Math.Round(24 * scale);
                 _clbTraits.ColumnWidth = (int)Math.Round(208 * scale);
             }
+
+            _advChangedHandler = OnGlobalAdvancedModeChanged;
+            TrainerSettings.AdvancedModeChanged += _advChangedHandler;
+            ApplyAdvancedModeLayout();
+
             InitializeCatalog();
         }
 
@@ -76,11 +126,15 @@ namespace ONITrainer
                 Location = new Point(16, 4),
                 Size = new Size(190, 26)
             });
-            top.Controls.Add(Lbl("按已安装 DLC 与游戏官方规则模拟开局，后台自动寻找符合全部星球特质的坐标", 18, 30, 560, SUB));
+            top.Controls.Add(Lbl("按已安装 DLC 与游戏官方规则模拟开局，后台自动寻找符合全部星球特质的坐标", 18, 30, 496, SUB));
 
-            Button btnBrowse = B("选择游戏目录…", 796, 11, 108, 30, false);
+            Button btnBrowse = B("选择游戏目录…", 716, 11, 110, 30, false);
             btnBrowse.Click += (s, e) => BrowseGameDir();
             top.Controls.Add(btnBrowse);
+
+            Button btnSettings = B("设置", 832, 11, 72, 30, false);
+            btnSettings.Click += (s, e) => OpenSettingsDialog();
+            top.Controls.Add(btnSettings);
 
             _lblGameDir = new Label
             {
@@ -88,8 +142,8 @@ namespace ONITrainer
                 ForeColor = C(SUB),
                 Font = _fontReg,
                 TextAlign = ContentAlignment.MiddleRight,
-                Location = new Point(580, 15),
-                Size = new Size(208, 22)
+                Location = new Point(518, 15),
+                Size = new Size(192, 22)
             };
             top.Controls.Add(_lblGameDir);
 
@@ -250,28 +304,33 @@ namespace ONITrainer
             gRes.Controls.Add(_btnNext);
             gRes.Controls.Add(_lblSearchStatus);
 
-            gRes.Controls.Add(Lbl("目的地坐标", 14, 64, 78, TXT));
+            gRes.Controls.Add(Lbl("目的地坐标", 14, 64, 76, TXT));
             _txtCoord = new TextBox
             {
-                Location = new Point(96, 61),
-                Size = new Size(370, 26),
-                ReadOnly = true,
+                Location = new Point(92, 61),
+                Size = new Size(300, 26),
+                ReadOnly = false,
                 BackColor = C(INPUT),
                 ForeColor = C(ACC),
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Consolas", 10F, FontStyle.Bold)
             };
+            _txtCoord.TextChanged += (s, e) => OnCoordTextChanged();
             gRes.Controls.Add(_txtCoord);
 
-            _btnCopyCoord = B("复制完整坐标", 474, 60, 114, 28, true);
+            _btnCopyCoord = B("复制坐标", 400, 60, 86, 28, false);
             _btnCopyCoord.Enabled = false;
             _btnCopyCoord.Click += (s, e) => CopyCoord(true);
-            _btnCopySeed = B("复制纯种子", 596, 60, 96, 28, false);
+            _btnCopySeed = B("复制种子", 492, 60, 86, 28, false);
             _btnCopySeed.Enabled = false;
             _btnCopySeed.Click += (s, e) => CopyCoord(false);
-            _lblSeedOnly = Lbl("纯种子：—", 704, 64, 172, SUB);
+            _btnPreviewMap = B("预览地图", 584, 60, 108, 28, true);
+            _btnPreviewMap.Enabled = false;
+            _btnPreviewMap.Click += (s, e) => OpenMapPreview();
+            _lblSeedOnly = Lbl("纯种子：—", 700, 64, 176, SUB);
             gRes.Controls.Add(_btnCopyCoord);
             gRes.Controls.Add(_btnCopySeed);
+            gRes.Controls.Add(_btnPreviewMap);
             gRes.Controls.Add(_lblSeedOnly);
 
             _txtPreview = new TextBox
@@ -288,10 +347,80 @@ namespace ONITrainer
             };
             gRes.Controls.Add(_txtPreview);
 
+
+            _gPoiFilter = Card("高级功能：按间歇泉 / 火山 / 遗迹二次筛选（需游戏停留在主菜单）", 16, 568, 888, 148);
+            _gPoiFilter.Visible = false;
+
+            _gPoiFilter.Controls.Add(Lbl("目标行星", 14, 27, 58, TXT));
+            _cboPoiPlanet = new ComboBox
+            {
+                Location = new Point(74, 24),
+                Size = new Size(186, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                FlatStyle = FlatStyle.Flat,
+                Font = _fontReg
+            };
+            _gPoiFilter.Controls.Add(_cboPoiPlanet);
+
+            _gPoiFilter.Controls.Add(Lbl("间歇泉/火山/遗迹", 268, 27, 114, TXT));
+            _cboPoiType = new ComboBox
+            {
+                Location = new Point(386, 24),
+                Size = new Size(252, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                FlatStyle = FlatStyle.Flat,
+                Font = _fontReg
+            };
+            List<PoiFilterCatalogEntry> poiCat = MapPreviewData.GetFilterCatalog();
+            for (int i = 0; i < poiCat.Count; i++) _cboPoiType.Items.Add(poiCat[i]);
+            if (_cboPoiType.Items.Count > 0) _cboPoiType.SelectedIndex = 0;
+            _gPoiFilter.Controls.Add(_cboPoiType);
+
+            _gPoiFilter.Controls.Add(Lbl("最少", 646, 27, 34, TXT));
+            _numPoiCount = new NumericUpDown
+            {
+                Location = new Point(682, 24),
+                Size = new Size(50, 26),
+                Minimum = 1,
+                Maximum = 9,
+                Value = 1,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                Font = _fontReg
+            };
+            _gPoiFilter.Controls.Add(_numPoiCount);
+
+            _btnAddPoi = B("添加条件", 740, 23, 72, 26, true);
+            _btnAddPoi.Click += (s, e) => AddPoiRule();
+            _btnClearPoi = B("清空", 818, 23, 56, 26, false);
+            _btnClearPoi.Click += (s, e) => ClearPoiRules();
+            _gPoiFilter.Controls.Add(_btnAddPoi);
+            _gPoiFilter.Controls.Add(_btnClearPoi);
+
+            _lstPoiRules = new ListBox
+            {
+                Location = new Point(14, 56),
+                Size = new Size(860, 62),
+                BackColor = C(CARD),
+                ForeColor = C(ACC),
+                BorderStyle = BorderStyle.FixedSingle,
+                IntegralHeight = false,
+                Font = _fontReg
+            };
+            _lstPoiRules.MouseDoubleClick += (s, e) => RemoveSelectedPoiRule();
+            _gPoiFilter.Controls.Add(_lstPoiRules);
+
+            _gPoiFilter.Controls.Add(Lbl("提示：添加条件后点「开始后台筛选」，将先毫秒筛特质，再进一步验证真实间歇泉（约 1~2 秒/候选）；双击上方列表项可删除。", 14, 122, 860, SUB));
+
             body.Controls.Add(gCfg);
             body.Controls.Add(gPlanets);
             body.Controls.Add(gTraits);
             body.Controls.Add(gRes);
+            body.Controls.Add(_gPoiFilter);
 
             Controls.Add(body);
             Controls.Add(top);
@@ -485,15 +614,23 @@ namespace ONITrainer
         {
             if (_suppressEvents) return;
             StopSearch();
-            _curCluster = _cboCluster.SelectedItem as ClusterDef;
-            _constraints.Clear();
+            _searchCtrl = null;
             _lastResult = null;
+            _constraints.Clear();
+            _poiRules.Clear();
+            _previewCache.Clear();
+            _previewCacheSeed = 0;
+
+            _curCluster = _cboCluster.SelectedItem as ClusterDef;
+            _suppressEvents = true;
             _txtCoord.Clear();
+            _suppressEvents = false;
             _txtPreview.Clear();
             _lblSeedOnly.Text = "纯种子：—";
             _btnNext.Enabled = false;
             _btnCopyCoord.Enabled = false;
             _btnCopySeed.Enabled = false;
+            _btnPreviewMap.Enabled = (_curCluster != null && _curCluster.FixedCoordinate > 0);
 
             _orderedPlacements.Clear();
             if (_curCluster != null)
@@ -504,7 +641,18 @@ namespace ONITrainer
                     int pidx = _orderedPlacements[i].PlacementIndex;
                     _constraints[pidx] = new PlanetConstraint { PlacementIndex = pidx };
                 }
+                if (_curCluster.FixedCoordinate > 0)
+                {
+                    _suppressEvents = true;
+                    _txtCoord.Text = SeedSearcher.FormatCoordinate(_curCluster.CoordinatePrefix, _curCluster.FixedCoordinate, _txtTemplateCoord.Text);
+                    _suppressEvents = false;
+                    _lblSeedOnly.Text = "纯种子：" + _curCluster.FixedCoordinate.ToString(CultureInfo.InvariantCulture);
+                    _btnCopyCoord.Enabled = true;
+                    _btnCopySeed.Enabled = true;
+                }
             }
+            RefreshPoiPlanetCombo();
+            RefreshPoiRulesList();
             RefreshPlanetList(0);
             RefreshTraitEditor();
         }
@@ -792,13 +940,43 @@ namespace ONITrainer
             if (_searchThread != null && _searchThread.IsAlive) return;
 
             List<PlanetConstraint> list = new List<PlanetConstraint>(_constraints.Values);
-            string err;
-            if (!SeedSearcher.ValidateConstraints(_catalog, _curCluster, list, out err))
+            bool hasTraitConstraint = false;
+            for (int i = 0; i < list.Count; i++)
+                if (list[i].RequiredMask != 0 || list[i].ForbiddenMask != 0 || list[i].RequireNoTraits)
+                { hasTraitConstraint = true; break; }
+
+            bool usePoiFilter = TrainerSettings.AdvancedMode && _poiRules.Count > 0;
+            if (hasTraitConstraint || !usePoiFilter)
             {
-                _lblSearchStatus.Text = "⚠ " + err;
-                _lblSearchStatus.ForeColor = C(WARN);
-                MessageBox.Show(this, err, "条件无法同时满足", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                string err;
+                if (!SeedSearcher.ValidateConstraints(_catalog, _curCluster, list, out err))
+                {
+                    _lblSearchStatus.Text = "⚠ " + err;
+                    _lblSearchStatus.ForeColor = C(WARN);
+                    MessageBox.Show(this, err, "条件无法同时满足", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
+            if (usePoiFilter)
+            {
+                BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                if (st == null || st.Bridge == null)
+                {
+                    string msg = "已添加间歇泉/火山高级筛选条件：请先启动《缺氧》游戏并停留在「主菜单」再开始筛选。";
+                    _lblSearchStatus.Text = "⚠ " + msg;
+                    _lblSearchStatus.ForeColor = C(WARN);
+                    MessageBox.Show(this, msg, "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (st.InSave)
+                {
+                    string msg = "当前游戏已进入存档，高级地图筛选需要游戏停留在「主菜单」才能安全模拟生成地图。";
+                    _lblSearchStatus.Text = "⚠ " + msg;
+                    _lblSearchStatus.ForeColor = C(WARN);
+                    MessageBox.Show(this, msg, "请先返回主菜单", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
             }
 
             int startSeed;
@@ -815,70 +993,316 @@ namespace ONITrainer
             string tplCoord = _txtTemplateCoord.Text;
             ClusterDef cluster = _curCluster;
             WorldGenCatalog catalog = _catalog;
+            string dlcCsv = GetActiveDlcCsv();
+            List<BoundPoiRule> poiRulesSnap = new List<BoundPoiRule>(_poiRules);
             SearchControl ctrl = new SearchControl();
             _searchCtrl = ctrl;
 
             _btnSearch.Enabled = false;
             _btnNext.Enabled = false;
             _btnStop.Enabled = true;
-            _lblSearchStatus.Text = "正在后台多线程筛选种子，请稍候…";
+            _lblSearchStatus.Text = usePoiFilter
+                ? "高级筛选启动中… 先快速匹配特质再调用游戏验证地图"
+                : "正在后台多线程筛选种子，请稍候…";
             _lblSearchStatus.ForeColor = C(WARN);
 
             Thread t = new Thread(() =>
             {
-                SeedSearchResult res = null;
-                try
+                if (!usePoiFilter)
                 {
-                    res = SeedSearcher.SearchSync(catalog, cluster, list, startSeed, tplCoord, ctrl, (tested, elapsedMs) =>
-                    {
-                        double rate = elapsedMs > 1.0 ? (tested / (elapsedMs / 1000.0)) : 0;
-                        string msg = string.Format("后台筛选中… 已检测 {0:N0} 个种子（约 {1:N0} 个/秒）", tested, rate);
-                        SetUi(() =>
-                        {
-                            if (_searchCtrl == ctrl && !ctrl.Stop)
-                            {
-                                _lblSearchStatus.Text = msg;
-                                _lblSearchStatus.ForeColor = C(WARN);
-                            }
-                        });
-                    });
+                    RunTraitOnlySearch(catalog, cluster, list, startSeed, tplCoord, ctrl);
+                    return;
                 }
-                catch { }
-
-                SetUi(() =>
-                {
-                    if (_searchCtrl != ctrl) return;
-                    _btnSearch.Enabled = true;
-                    _btnStop.Enabled = false;
-                    if (ctrl.Stop)
-                    {
-                        _lblSearchStatus.Text = "已停止搜索（已检测 " + ctrl.Tested.ToString("N0") + " 个种子）";
-                        _lblSearchStatus.ForeColor = C(SUB);
-                        return;
-                    }
-                    if (res == null)
-                    {
-                        _lblSearchStatus.Text = "未在完整种子空间内找到满足全部条件的组合，请放宽部分条件。";
-                        _lblSearchStatus.ForeColor = C(ERR);
-                        return;
-                    }
-
-                    _lastResult = res;
-                    _btnNext.Enabled = cluster.FixedCoordinate <= 0;
-                    _btnCopyCoord.Enabled = true;
-                    _btnCopySeed.Enabled = true;
-
-                    _txtCoord.Text = res.Coordinate;
-                    _lblSeedOnly.Text = "纯种子：" + res.Seed.ToString(CultureInfo.InvariantCulture);
-                    _lblSearchStatus.Text = string.Format("已找到符合条件的世界种子！耗时 {0:0.00} 秒（检测 {1:N0} 个种子）",
-                        res.ElapsedMs / 1000.0, res.SeedsTested);
-                    _lblSearchStatus.ForeColor = C(ACC);
-                    _txtPreview.Text = BuildPreviewText(cluster, res);
-                });
+                RunAdvancedPoiSearch(catalog, cluster, list, hasTraitConstraint, startSeed, tplCoord, dlcCsv, poiRulesSnap, ctrl);
             });
             t.IsBackground = true;
             _searchThread = t;
             t.Start();
+        }
+
+        void RunTraitOnlySearch(
+            WorldGenCatalog catalog,
+            ClusterDef cluster,
+            List<PlanetConstraint> list,
+            int startSeed,
+            string tplCoord,
+            SearchControl ctrl)
+        {
+            SeedSearchResult res = null;
+            try
+            {
+                res = SeedSearcher.SearchSync(catalog, cluster, list, startSeed, tplCoord, ctrl, (tested, elapsedMs) =>
+                {
+                    double rate = elapsedMs > 1.0 ? (tested / (elapsedMs / 1000.0)) : 0;
+                    string msg = string.Format("后台筛选中… 已检测 {0:N0} 个种子（约 {1:N0} 个/秒）", tested, rate);
+                    SetUi(() =>
+                    {
+                        if (_searchCtrl == ctrl && !ctrl.Stop)
+                        {
+                            _lblSearchStatus.Text = msg;
+                            _lblSearchStatus.ForeColor = C(WARN);
+                        }
+                    });
+                });
+            }
+            catch { }
+
+            FinishSearchOnUi(cluster, ctrl, res, null, null);
+        }
+
+        void RunAdvancedPoiSearch(
+            WorldGenCatalog catalog,
+            ClusterDef cluster,
+            List<PlanetConstraint> list,
+            bool hasTraitConstraint,
+            int startSeed,
+            string tplCoord,
+            string dlcCsv,
+            List<BoundPoiRule> poiRulesSnap,
+            SearchControl ctrl)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            long totalTraitTested = 0;
+            int mapsTested = 0;
+            int curSeed = startSeed;
+            string abortErr = null;
+            SeedSearchResult matched = null;
+            Dictionary<int, MapPreviewData> matchedMaps = new Dictionary<int, MapPreviewData>();
+
+
+            Dictionary<int, List<PoiFilterRule>> grouped = new Dictionary<int, List<PoiFilterRule>>();
+            for (int i = 0; i < poiRulesSnap.Count; i++)
+            {
+                BoundPoiRule b = poiRulesSnap[i];
+                List<PoiFilterRule> rl;
+                if (!grouped.TryGetValue(b.PlacementIndex, out rl))
+                {
+                    rl = new List<PoiFilterRule>();
+                    grouped[b.PlacementIndex] = rl;
+                }
+                rl.Add(b.Rule);
+            }
+
+            try
+            {
+                while (!ctrl.Stop)
+                {
+                    int candidateSeed;
+                    Dictionary<int, List<WorldTraitDef>> traitsMap;
+
+                    if (hasTraitConstraint)
+                    {
+                        SearchControl subCtrl = new SearchControl();
+                        Thread cancelWatch = new Thread(() =>
+                        {
+                            while (!subCtrl.Stop && !ctrl.Stop) Thread.Sleep(50);
+                            subCtrl.Stop = true;
+                        });
+                        cancelWatch.IsBackground = true;
+                        cancelWatch.Start();
+
+                        SeedSearchResult traitRes = SeedSearcher.SearchSync(catalog, cluster, list, curSeed, tplCoord, subCtrl, (tested, elapsedMs) =>
+                        {
+                            if (ctrl.Stop) subCtrl.Stop = true;
+                            string msg = string.Format("高级筛选中（特质阶段）… 已检 {0:N0} 种子 · 地图已验 {1} 次",
+                                totalTraitTested + tested, mapsTested);
+                            SetUi(() =>
+                            {
+                                if (_searchCtrl == ctrl && !ctrl.Stop)
+                                {
+                                    _lblSearchStatus.Text = msg;
+                                    _lblSearchStatus.ForeColor = C(WARN);
+                                }
+                            });
+                        });
+                        subCtrl.Stop = true;
+                        try { cancelWatch.Join(100); } catch { }
+
+                        if (ctrl.Stop) break;
+                        if (traitRes == null)
+                        {
+                            abortErr = "未在种子空间内找到满足特质条件的候选种子。";
+                            break;
+                        }
+                        totalTraitTested += traitRes.SeedsTested;
+                        candidateSeed = traitRes.Seed;
+                        traitsMap = traitRes.PlanetTraits;
+                    }
+                    else
+                    {
+                        candidateSeed = curSeed;
+                        totalTraitTested++;
+                        traitsMap = catalog.EvaluateClusterSeed(cluster, candidateSeed);
+                    }
+
+                    if (ctrl.Stop) break;
+
+                    SetUi(() =>
+                    {
+                        if (_searchCtrl == ctrl && !ctrl.Stop)
+                        {
+                            _lblSearchStatus.Text = string.Format(
+                                "高级筛选中（地图验证 #{0}）… 特质已检 {1:N0} · 地图已验 {2} 次 · 耗时 {3:0.0}s",
+                                candidateSeed, totalTraitTested, mapsTested, sw.Elapsed.TotalSeconds);
+                            _lblSearchStatus.ForeColor = C(WARN);
+                        }
+                    });
+
+                    BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                    if (st == null || st.Bridge == null)
+                    {
+                        abortErr = "游戏连接已断开，高级筛选停止。";
+                        break;
+                    }
+                    if (st.InSave)
+                    {
+                        abortErr = "检测到已进入存档，已停止高级筛选（需停留在主菜单）。";
+                        break;
+                    }
+
+                    bool allOk = true;
+                    Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
+                    foreach (KeyValuePair<int, List<PoiFilterRule>> kv in grouped)
+                    {
+                        if (ctrl.Stop) { allOk = false; break; }
+                        string genErr;
+                        MapPreviewData mapData = st.Bridge.GenerateMapPreview(
+                            cluster.FilePath, candidateSeed, kv.Key, dlcCsv, "", out genErr);
+                        mapsTested++;
+                        if (mapData == null)
+                        {
+                            abortErr = genErr ?? "地图生成失败";
+                            allOk = false;
+                            break;
+                        }
+                        curMaps[kv.Key] = mapData;
+                        if (!mapData.MatchesAllRules(kv.Value))
+                        {
+                            allOk = false;
+                            break;
+                        }
+                    }
+
+                    if (abortErr != null || ctrl.Stop) break;
+
+                    if (allOk)
+                    {
+                        matchedMaps = curMaps;
+                        matched = new SeedSearchResult
+                        {
+                            Seed = candidateSeed,
+                            Coordinate = SeedSearcher.FormatCoordinate(cluster.CoordinatePrefix, candidateSeed, tplCoord),
+                            SeedsTested = totalTraitTested,
+                            ElapsedMs = sw.Elapsed.TotalMilliseconds,
+                            PlanetTraits = traitsMap
+                        };
+                        break;
+                    }
+
+                    if (cluster.FixedCoordinate > 0)
+                    {
+                        abortErr = cluster.DisplayName + " 为固定种子，无法刷出全部指定间歇泉/火山条件。";
+                        break;
+                    }
+
+                    curSeed = candidateSeed + 1;
+                    if (curSeed > SeedSearcher.MaxSearchSeed) curSeed = 1;
+                }
+            }
+            catch (Exception ex)
+            {
+                abortErr = "高级筛选异常：" + ex.Message;
+            }
+
+            ctrl.Tested = totalTraitTested;
+            string mapNote = abortErr == null && matched != null
+                ? string.Format("地图已验 {0} 个候选，", mapsTested)
+                : null;
+            FinishSearchOnUi(cluster, ctrl, matched, matchedMaps, abortErr, mapNote);
+        }
+
+        void FinishSearchOnUi(
+            ClusterDef cluster,
+            SearchControl ctrl,
+            SeedSearchResult res,
+            Dictionary<int, MapPreviewData> cachedMaps,
+            string abortErr,
+            string mapNote = null)
+        {
+            SetUi(() =>
+            {
+                if (_searchCtrl != ctrl) return;
+                _btnSearch.Enabled = true;
+                _btnStop.Enabled = false;
+                if (ctrl.Stop)
+                {
+                    _lblSearchStatus.Text = "已停止搜索（已检测 " + ctrl.Tested.ToString("N0") + " 个种子）";
+                    _lblSearchStatus.ForeColor = C(SUB);
+                    return;
+                }
+                if (abortErr != null)
+                {
+                    _lblSearchStatus.Text = "⚠ " + abortErr;
+                    _lblSearchStatus.ForeColor = C(ERR);
+                    return;
+                }
+                if (res == null)
+                {
+                    _lblSearchStatus.Text = "未在完整种子空间内找到满足全部条件的组合，请放宽部分条件。";
+                    _lblSearchStatus.ForeColor = C(ERR);
+                    return;
+                }
+
+                _lastResult = res;
+                _previewCache.Clear();
+                if (cachedMaps != null && cachedMaps.Count > 0)
+                {
+                    _previewCacheSeed = res.Seed;
+                    foreach (KeyValuePair<int, MapPreviewData> kv in cachedMaps)
+                        _previewCache[kv.Key] = kv.Value;
+                }
+
+                _btnNext.Enabled = cluster.FixedCoordinate <= 0;
+                _btnCopyCoord.Enabled = true;
+                _btnCopySeed.Enabled = true;
+                _btnPreviewMap.Enabled = true;
+
+                _suppressEvents = true;
+                _txtCoord.Text = res.Coordinate;
+                _suppressEvents = false;
+                _lblSeedOnly.Text = "纯种子：" + res.Seed.ToString(CultureInfo.InvariantCulture);
+                _lblSearchStatus.Text = string.Format("已找到符合条件的世界种子！{0}耗时 {1:0.00} 秒（特质已检 {2:N0} 个）",
+                    mapNote ?? "", res.ElapsedMs / 1000.0, res.SeedsTested);
+                _lblSearchStatus.ForeColor = C(ACC);
+
+                string txt = BuildPreviewText(cluster, res);
+                if (cachedMaps != null && cachedMaps.Count > 0)
+                    txt += AppendMapSummaryText(cachedMaps);
+                _txtPreview.Text = txt;
+            });
+        }
+
+        static string AppendMapSummaryText(Dictionary<int, MapPreviewData> maps)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (KeyValuePair<int, MapPreviewData> kv in maps)
+            {
+                MapPreviewData md = kv.Value;
+                Dictionary<string, int> counts = new Dictionary<string, int>(StringComparer.CurrentCulture);
+                for (int i = 0; i < md.Pois.Count; i++)
+                {
+                    MapPoiItem p = md.Pois[i];
+                    if (p.Category == "start") continue;
+                    int old;
+                    counts.TryGetValue(p.DisplayName, out old);
+                    counts[p.DisplayName] = old + 1;
+                }
+                List<string> items = new List<string>();
+                foreach (KeyValuePair<string, int> c in counts)
+                    items.Add(c.Value > 1 ? (c.Key + "×" + c.Value) : c.Key);
+                sb.AppendFormat("\r\n[{0} 间歇泉/遗迹] {1}", md.WorldName, string.Join("、", items.ToArray()));
+            }
+            return sb.ToString();
         }
 
         string BuildPreviewText(ClusterDef cluster, SeedSearchResult res)
@@ -913,13 +1337,19 @@ namespace ONITrainer
 
         void CopyCoord(bool full)
         {
-            if (_lastResult == null) return;
+            int seed;
+            if (!TryGetActiveSeed(out seed)) return;
             string text = full
-                ? SeedSearcher.FormatCoordinate(_curCluster != null ? _curCluster.CoordinatePrefix : "", _lastResult.Seed, _txtTemplateCoord.Text)
-                : _lastResult.Seed.ToString(CultureInfo.InvariantCulture);
+                ? SeedSearcher.FormatCoordinate(_curCluster != null ? _curCluster.CoordinatePrefix : "", seed, _txtTemplateCoord.Text)
+                : seed.ToString(CultureInfo.InvariantCulture);
             try
             {
-                if (full) _txtCoord.Text = text;
+                if (full)
+                {
+                    _suppressEvents = true;
+                    _txtCoord.Text = text;
+                    _suppressEvents = false;
+                }
                 Clipboard.SetText(text);
                 _lblSearchStatus.Text = (full ? "已复制完整坐标到剪贴板：" : "已复制纯种子到剪贴板：") + text;
                 _lblSearchStatus.ForeColor = C(ACC);
@@ -930,9 +1360,210 @@ namespace ONITrainer
             }
         }
 
+        void OpenSettingsDialog()
+        {
+            if (_openSettings != null)
+            {
+                _openSettings();
+                return;
+            }
+            using (SettingsForm f = new SettingsForm())
+                f.ShowDialog(this);
+        }
+
+        void OnGlobalAdvancedModeChanged()
+        {
+            SetUi(ApplyAdvancedModeLayout);
+        }
+
+        void ApplyAdvancedModeLayout()
+        {
+            if (_gPoiFilter == null) return;
+            bool adv = TrainerSettings.AdvancedMode;
+            _gPoiFilter.Visible = adv;
+            int targetH = adv ? _advClientHeight : _baseClientHeight;
+            Screen scr = Screen.FromControl(this);
+            int maxClientH = Math.Max(300, scr.WorkingArea.Height - 72);
+            if (targetH > maxClientH) targetH = maxClientH;
+
+            int ncW = Width - ClientSize.Width;
+            int ncH = Height - ClientSize.Height;
+            Size nextFull = new Size(ClientSize.Width + ncW, targetH + ncH);
+            MinimumSize = nextFull;
+            MaximumSize = nextFull;
+            ClientSize = new Size(ClientSize.Width, targetH);
+        }
+
+        sealed class PoiPlanetChoice
+        {
+            public WorldPlacementDef Placement;
+            public override string ToString()
+            {
+                string nm = Placement.World != null ? Placement.World.DisplayName : Placement.WorldId;
+                return string.Format("[{0}] {1}", Placement.GroupLabel(), nm);
+            }
+        }
+
+        void RefreshPoiPlanetCombo()
+        {
+            if (_cboPoiPlanet == null) return;
+            _cboPoiPlanet.Items.Clear();
+            int startSel = 0;
+            for (int i = 0; i < _orderedPlacements.Count; i++)
+            {
+                _cboPoiPlanet.Items.Add(new PoiPlanetChoice { Placement = _orderedPlacements[i] });
+                if (_curCluster != null && _orderedPlacements[i].PlacementIndex == _curCluster.StartWorldIndex)
+                    startSel = i;
+            }
+            if (_cboPoiPlanet.Items.Count > 0) _cboPoiPlanet.SelectedIndex = startSel;
+        }
+
+        void AddPoiRule()
+        {
+            PoiPlanetChoice pc = _cboPoiPlanet.SelectedItem as PoiPlanetChoice;
+            PoiFilterCatalogEntry entry = _cboPoiType.SelectedItem as PoiFilterCatalogEntry;
+            if (pc == null || entry == null) return;
+
+            int pidx = pc.Placement.PlacementIndex;
+            int minCnt = (int)_numPoiCount.Value;
+            for (int i = 0; i < _poiRules.Count; i++)
+            {
+                if (_poiRules[i].PlacementIndex == pidx &&
+                    string.Equals(_poiRules[i].Rule.PrefabId, entry.PrefabId, StringComparison.OrdinalIgnoreCase))
+                {
+                    _poiRules[i].Rule.MinCount = minCnt;
+                    RefreshPoiRulesList();
+                    return;
+                }
+            }
+
+            _poiRules.Add(new BoundPoiRule
+            {
+                PlacementIndex = pidx,
+                PlanetName = pc.Placement.World != null ? pc.Placement.World.DisplayName : pc.Placement.WorldId,
+                Rule = new PoiFilterRule
+                {
+                    PrefabId = entry.PrefabId,
+                    Category = entry.Category,
+                    DisplayName = entry.DisplayName,
+                    MinCount = minCnt
+                }
+            });
+            RefreshPoiRulesList();
+        }
+
+        void ClearPoiRules()
+        {
+            _poiRules.Clear();
+            RefreshPoiRulesList();
+        }
+
+        void RemoveSelectedPoiRule()
+        {
+            int idx = _lstPoiRules.SelectedIndex;
+            if (idx < 0 || idx >= _poiRules.Count) return;
+            _poiRules.RemoveAt(idx);
+            RefreshPoiRulesList();
+        }
+
+        void RefreshPoiRulesList()
+        {
+            if (_lstPoiRules == null) return;
+            _lstPoiRules.BeginUpdate();
+            _lstPoiRules.Items.Clear();
+            for (int i = 0; i < _poiRules.Count; i++)
+                _lstPoiRules.Items.Add(_poiRules[i]);
+            _lstPoiRules.EndUpdate();
+        }
+
+        void OnCoordTextChanged()
+        {
+            if (_suppressEvents) return;
+            int seed;
+            bool valid = TryParseSeedInput(_txtCoord.Text, out seed);
+            _btnPreviewMap.Enabled = valid && _curCluster != null;
+            _btnCopyCoord.Enabled = valid && _curCluster != null;
+            _btnCopySeed.Enabled = valid && _curCluster != null;
+            _lblSeedOnly.Text = valid ? ("纯种子：" + seed.ToString(CultureInfo.InvariantCulture)) : "纯种子：—";
+        }
+
+        bool TryGetActiveSeed(out int seed)
+        {
+            if (TryParseSeedInput(_txtCoord.Text, out seed)) return true;
+            if (_lastResult != null && _lastResult.Seed > 0) { seed = _lastResult.Seed; return true; }
+            if (_curCluster != null && _curCluster.FixedCoordinate > 0) { seed = _curCluster.FixedCoordinate; return true; }
+            seed = 0;
+            return false;
+        }
+
+        static bool TryParseSeedInput(string raw, out int seed)
+        {
+            seed = 0;
+            if (string.IsNullOrEmpty(raw)) return false;
+            string s = raw.Trim();
+            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out seed) && seed > 0)
+                return true;
+            Match m = Regex.Match(s, @"^.+?-(\d+)(?:-.+)?$");
+            if (m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out seed) && seed > 0)
+                return true;
+            seed = 0;
+            return false;
+        }
+
+        string GetActiveDlcCsv()
+        {
+            List<string> ids = new List<string>();
+            if (_dlcs != null)
+            {
+                for (int i = 0; i < _dlcs.Count; i++)
+                    if (_dlcs[i].Enabled) ids.Add(_dlcs[i].Id);
+            }
+            if (ids.Count == 0) return "VANILLA";
+            return string.Join(",", ids.ToArray());
+        }
+
+        void OpenMapPreview()
+        {
+            if (_curCluster == null) return;
+            int seed;
+            if (!TryGetActiveSeed(out seed))
+            {
+                MessageBox.Show(this, "请先筛选出一个种子，或在「目的地坐标」框内输入要预览的种子/坐标。",
+                    "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (_mapPreviewForm != null && !_mapPreviewForm.IsDisposed)
+                try { _mapPreviewForm.Close(); } catch { }
+
+            string fullCoord = SeedSearcher.FormatCoordinate(_curCluster.CoordinatePrefix, seed,
+                string.IsNullOrEmpty(_txtTemplateCoord.Text) ? _txtCoord.Text : _txtTemplateCoord.Text);
+
+            Dictionary<int, MapPreviewData> cache = (_previewCacheSeed == seed && _previewCache.Count > 0)
+                ? _previewCache : null;
+
+            int initWorldIdx = _curCluster.StartWorldIndex;
+            WorldPlacementDef curWp = CurrentPlacement();
+            if (curWp != null) initWorldIdx = curWp.PlacementIndex;
+
+            _mapPreviewForm = new MapPreviewForm(
+                _curCluster,
+                seed,
+                fullCoord,
+                GetActiveDlcCsv(),
+                _getBridge,
+                cache,
+                initWorldIdx);
+            _mapPreviewForm.Show(this);
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _closing = true;
+            if (_advChangedHandler != null)
+                TrainerSettings.AdvancedModeChanged -= _advChangedHandler;
+            if (_mapPreviewForm != null && !_mapPreviewForm.IsDisposed)
+                try { _mapPreviewForm.Close(); } catch { }
             StopSearch();
             if (_searchThread != null && _searchThread.IsAlive)
                 _searchThread.Join(250);
