@@ -315,6 +315,18 @@ namespace ONITrainer
             string storyTraitCsv,
             out string err)
         {
+            return GenerateMapPreview(clusterFilePath, seed, worldIndex, activeDlcCsv, storyTraitCsv, "", out err);
+        }
+
+        public MapPreviewData GenerateMapPreview(
+            string clusterFilePath,
+            int seed,
+            int worldIndex,
+            string activeDlcCsv,
+            string storyTraitCsv,
+            string mixingCsv,
+            out string err)
+        {
             err = null;
             if (!EnsureHelperLoaded(out err)) return null;
 
@@ -327,13 +339,14 @@ namespace ONITrainer
             try
             {
                 string req = string.Format(CultureInfo.InvariantCulture,
-                    "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}",
+                    "PREVIEW {0}|{1}|{2}|{3}|{4}|{5}|{6}",
                     clusterFilePath ?? "",
                     seed,
                     worldIndex,
                     activeDlcCsv ?? "",
                     storyTraitCsv ?? "",
-                    outPath);
+                    outPath,
+                    mixingCsv ?? "");
 
                 string resp = Cmd(req, 3000, 45000);
                 if (string.IsNullOrEmpty(resp))
@@ -366,6 +379,45 @@ namespace ONITrainer
                 try { if (File.Exists(outPath)) File.Delete(outPath); }
                 catch { }
             }
+        }
+
+        public string RunMenuCmd(string payload, out string err)
+        {
+            err = null;
+            if (!EnsureHelperLoaded(out err)) return null;
+            string resp = Cmd("MENUCMD " + (payload ?? ""), 3000, 12000);
+            if (string.IsNullOrEmpty(resp)) { err = "游戏未响应"; return null; }
+            if (resp == "OK") return "";
+            if (resp.StartsWith("OK ")) return resp.Substring(3);
+            err = resp;
+            return null;
+        }
+
+        public string RunHelperCmd(string payload, out string err)
+        {
+            return RunHelperCmd(payload, out err, 6000);
+        }
+
+        public string RunHelperCmd(string payload, out string err, int timeoutMs)
+        {
+            err = null;
+            if (!EnsureHelperLoaded(out err)) return null;
+            string resp = Cmd("HELPERCMD " + (payload ?? ""), 2500, timeoutMs);
+            if (string.IsNullOrEmpty(resp)) { err = "游戏未响应"; return null; }
+            if (resp == "OK") return "";
+            if (resp.StartsWith("OK ")) return resp.Substring(3);
+            err = resp;
+            return null;
+        }
+
+        public bool SetSurvivalMask(int mask, out string err)
+        {
+            err = null;
+            if (!EnsureHelperLoaded(out err)) return false;
+            string resp = Cmd("SURVIVAL " + mask, 2000, 4000);
+            if (resp != null && resp.StartsWith("OK")) return true;
+            err = resp ?? "未响应";
+            return false;
         }
 
         bool Ping()
@@ -479,7 +531,7 @@ namespace ONITrainer
             UIntPtr written;
             if (!WriteProcessMemory(h, mem, path, (UIntPtr)path.Length, out written))
             {
-                err = "写入组件路径失败（错误码 " + Marshal.GetLastWin32Error() + "）";
+                err = "初始化失败（错误码 " + Marshal.GetLastWin32Error() + "）";
                 VirtualFreeEx(h, mem, UIntPtr.Zero, 0x8000);
                 CloseHandle(h);
                 return false;

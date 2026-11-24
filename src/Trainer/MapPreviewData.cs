@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -39,6 +40,52 @@ namespace ONITrainer
         public int Y;
         public bool IsRandomGeyser;
         public int DistFromStart;
+
+
+        public bool HasGeyserStats;
+        public float AvgYieldGps;
+        public float EruptRateGps;
+        public float OutputTempC;
+        public float EruptSec;
+        public float IdleSec;
+        public float ActiveCycles;
+        public float DormantCycles;
+        public byte Grade;
+        public float Percentile;
+
+        public string GradeText()
+        {
+            if (Grade == 1) return "S";
+            if (Grade == 2) return "A";
+            if (Grade == 3) return "B";
+            if (Grade == 4) return "C";
+            return "";
+        }
+
+        public string FormatYieldShort()
+        {
+            if (!HasGeyserStats) return "";
+            if (AvgYieldGps >= 1000f)
+                return string.Format(CultureInfo.InvariantCulture, "{0:0.##}kg/s", AvgYieldGps / 1000f);
+            return string.Format(CultureInfo.InvariantCulture, "{0:0}g/s", AvgYieldGps);
+        }
+
+        public string FormatDetailText()
+        {
+            if (!HasGeyserStats)
+            {
+                return string.Format("{0} ({1})\r\n坐标 ({2}, {3})  ·  距打印舱 {4} 格",
+                    DisplayName, PrefabId, X, Y, DistFromStart);
+            }
+            string g = GradeText();
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0}{1}  |  均产 {2:0.##} g/s · 喷发 {3:0.##} g/s · {4:0.#}℃\r\n" +
+                "喷发 {5:0.#}s / 间歇 {6:0.#}s  |  活跃 {7:0.#}周期 / 休眠 {8:0.#}周期  |  距起点 {9}格",
+                DisplayName,
+                string.IsNullOrEmpty(g) ? "" : (" [" + g + "级 " + Percentile.ToString("0") + "%]"),
+                AvgYieldGps, EruptRateGps, OutputTempC,
+                EruptSec, IdleSec, ActiveCycles, DormantCycles, DistFromStart);
+        }
     }
 
     public class PoiFilterCatalogEntry
@@ -71,10 +118,18 @@ namespace ONITrainer
         public string Category;
         public string DisplayName;
         public int MinCount;
+        public bool CompareAtMost;
+        public int MaxDist;
+        public float MinYieldGps;
 
         public override string ToString()
         {
-            return string.Format("[{0}] {1}  ≥ {2}", PoiFilterCatalogEntry.CategoryLabel(Category), DisplayName, MinCount);
+            string op = CompareAtMost ? "≤" : "≥";
+            string s = string.Format("[{0}] {1}  {2} {3}",
+                PoiFilterCatalogEntry.CategoryLabel(Category), DisplayName, op, MinCount);
+            if (MaxDist > 0) s += string.Format("  距≤{0}", MaxDist);
+            if (MinYieldGps > 0f) s += string.Format(CultureInfo.InvariantCulture, "  产≥{0:0.##}g/s", MinYieldGps);
+            return s;
         }
     }
 
@@ -233,6 +288,11 @@ namespace ONITrainer
             List<PoiFilterCatalogEntry> list = new List<PoiFilterCatalogEntry>();
             string[,] items = new string[,]
             {
+                { "@metal_volcano", "metal_volcano", "[任意] 金属火山" },
+                { "@volcano", "volcano", "[任意] 岩浆火山" },
+                { "@water_geyser", "water_geyser", "[任意] 水源/液泉" },
+                { "@gas_geyser", "gas_geyser", "[任意] 气体喷孔" },
+                { "@oil", "oil", "[任意] 油井" },
                 { "GeyserGeneric_molten_gold", "metal_volcano", "金火山" },
                 { "GeyserGeneric_molten_copper", "metal_volcano", "铜火山" },
                 { "GeyserGeneric_molten_iron", "metal_volcano", "铁火山" },
@@ -306,7 +366,7 @@ namespace ONITrainer
                 if (magic.Length != 4 || magic[0] != 'O' || magic[1] != 'N' || magic[2] != 'I' || magic[3] != 'P')
                     throw new InvalidDataException("无效的地图预览数据格式");
                 int ver = br.ReadInt32();
-                if (ver != 1)
+                if (ver != 1 && ver != 2)
                     throw new InvalidDataException("不支持的预览数据版本：" + ver);
 
                 MapPreviewData d = new MapPreviewData();
@@ -354,16 +414,30 @@ namespace ONITrainer
                     int py = br.ReadInt32();
                     bool isRand = br.ReadByte() != 0;
 
+                    bool hasStats = false;
+                    float avgY = 0f, eruptY = 0f, tempC = 0f, eSec = 0f, iSec = 0f, aCyc = 0f, dCyc = 0f, pct = 0f;
+                    byte grade = 0;
+                    if (ver >= 2)
+                    {
+                        hasStats = br.ReadByte() != 0;
+                        avgY = br.ReadSingle();
+                        eruptY = br.ReadSingle();
+                        tempC = br.ReadSingle();
+                        eSec = br.ReadSingle();
+                        iSec = br.ReadSingle();
+                        aCyc = br.ReadSingle();
+                        dCyc = br.ReadSingle();
+                        grade = br.ReadByte();
+                        pct = br.ReadSingle();
+                    }
+
                     if (string.IsNullOrEmpty(disp) || string.Equals(disp, pid, StringComparison.OrdinalIgnoreCase))
                     {
                         string fb;
                         if (s_poiFallbackNames.TryGetValue(pid, out fb)) disp = fb;
                     }
-                    int dx = px - d.BaseStartX;
-                    int dy = py - d.BaseStartY;
-                    int dist = (int)Math.Round(Math.Sqrt(dx * dx + dy * dy));
 
-                    d.Pois.Add(new MapPoiItem
+                    MapPoiItem item = new MapPoiItem
                     {
                         PrefabId = pid,
                         Category = cat,
@@ -371,8 +445,19 @@ namespace ONITrainer
                         X = px,
                         Y = py,
                         IsRandomGeyser = isRand,
-                        DistFromStart = dist
-                    });
+                        HasGeyserStats = hasStats,
+                        AvgYieldGps = avgY,
+                        EruptRateGps = eruptY,
+                        OutputTempC = tempC,
+                        EruptSec = eSec,
+                        IdleSec = iSec,
+                        ActiveCycles = aCyc,
+                        DormantCycles = dCyc,
+                        Grade = grade,
+                        Percentile = pct
+                    };
+                    item.DistFromStart = d.DistanceFromStart(item);
+                    d.Pois.Add(item);
                 }
 
                 d.Pois.Sort((a, b) =>
@@ -388,6 +473,14 @@ namespace ONITrainer
             }
         }
 
+        public int DistanceFromStart(MapPoiItem p)
+        {
+            if (p == null) return 0;
+            int dx = p.X - BaseStartX;
+            int dy = p.Y - BaseStartY;
+            return (int)Math.Round(Math.Sqrt(dx * dx + dy * dy));
+        }
+
         public int CountPrefab(string prefabId)
         {
             int cnt = 0;
@@ -397,12 +490,47 @@ namespace ONITrainer
             return cnt;
         }
 
+        public int CountMatchingRule(PoiFilterRule rule)
+        {
+            if (rule == null || string.IsNullOrEmpty(rule.PrefabId)) return 0;
+            bool isWildcard = rule.PrefabId.StartsWith("@", StringComparison.Ordinal);
+            string wildCat = isWildcard ? rule.PrefabId.Substring(1) : null;
+            int cnt = 0;
+            for (int i = 0; i < Pois.Count; i++)
+            {
+                MapPoiItem p = Pois[i];
+                if (isWildcard)
+                {
+                    if (!string.Equals(p.Category, wildCat, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+                else
+                {
+                    if (!string.Equals(p.PrefabId, rule.PrefabId, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+                if (rule.MaxDist > 0 && p.DistFromStart > rule.MaxDist)
+                    continue;
+                if (rule.MinYieldGps > 0f && (!p.HasGeyserStats || p.AvgYieldGps < rule.MinYieldGps))
+                    continue;
+                cnt++;
+            }
+            return cnt;
+        }
+
+        public bool MatchesRule(PoiFilterRule rule)
+        {
+            if (rule == null) return true;
+            int cnt = CountMatchingRule(rule);
+            return rule.CompareAtMost ? (cnt <= rule.MinCount) : (cnt >= rule.MinCount);
+        }
+
         public bool MatchesAllRules(List<PoiFilterRule> rules)
         {
             if (rules == null || rules.Count == 0) return true;
             for (int i = 0; i < rules.Count; i++)
             {
-                if (CountPrefab(rules[i].PrefabId) < rules[i].MinCount)
+                if (!MatchesRule(rules[i]))
                     return false;
             }
             return true;
@@ -463,28 +591,24 @@ namespace ONITrainer
 
                                 if (st == 0)
                                 {
-
                                     r = (byte)((zr * 45 + 14 * 55) / 100);
                                     g = (byte)((zg * 45 + 16 * 55) / 100);
                                     b = (byte)((zb * 45 + 22 * 55) / 100);
                                 }
                                 else if (st == 1)
                                 {
-
                                     r = (byte)((er * 45 + zr * 55) / 100);
                                     g = (byte)((eg * 45 + zg * 55) / 100);
                                     b = (byte)((eb * 45 + zb * 55) / 100);
                                 }
                                 else if (st == 2)
                                 {
-
                                     r = (byte)((er * 82 + zr * 18) / 100);
                                     g = (byte)((eg * 82 + zg * 18) / 100);
                                     b = (byte)((eb * 82 + zb * 18) / 100);
                                 }
                                 else
                                 {
-
                                     r = (byte)((er * 65 + zr * 35) / 100);
                                     g = (byte)((eg * 65 + zg * 35) / 100);
                                     b = (byte)((eb * 65 + zb * 35) / 100);
@@ -515,7 +639,6 @@ namespace ONITrainer
                 r = 22; g = 24; b = 32;
                 return;
             }
-
             if (tempC <= -40.0) { r = 40; g = 90; b = 220; return; }
             if (tempC <= 0.0)
             {
@@ -544,7 +667,7 @@ namespace ONITrainer
             if (tempC <= 120.0)
             {
                 double t = (tempC - 45.0) / 75.0;
-                r = (byte)(245);
+                r = 245;
                 g = (byte)(230 - t * 120);
                 b = (byte)(40 - t * 15);
                 return;

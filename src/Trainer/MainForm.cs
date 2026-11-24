@@ -94,7 +94,7 @@ namespace ONITrainer
         public override string ToString()
         {
             double lo = LowTemp - 273.15, hi = HighTemp - 273.15;
-            return Name + "  [" + StateLabel() + "]  温度 " + lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃";
+            return Name + "  [" + StateLabel() + "]  相变边界 " + lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃";
         }
     }
 
@@ -113,7 +113,10 @@ namespace ONITrainer
         volatile bool _busy;
         volatile bool _closing;
         volatile bool _inSave;
-        bool _speedApplied, _stressActive, _moraleActive, _moraleExpActive;
+        bool _speedApplied, _stressActive, _moraleActive, _moraleExpActive, _workSpeedActive;
+        int _survivalMask;
+        long _backupDoneForPtr;
+        bool _suppressSurvivalCheck;
         ConnPhase _phase = ConnPhase.WaitingGame;
         readonly ManualResetEventSlim _stopWatch = new ManualResetEventSlim(false);
         readonly Font _fontReg = new Font("Microsoft YaHei UI", 9F);
@@ -124,9 +127,14 @@ namespace ONITrainer
         NumericUpDown _numSpeed, _numStress, _numMorale, _numMoraleExp, _numMass, _numTemp;
         Elem _curElem;
         List<Elem> _allElems = new List<Elem>();
-        Button _btnPickElem, _btnTech, _btnTechPath, _btnSkillAdd, _btnSkillAll, _btnDupe, _btnSpawn, _btnReveal;
-        Label _lblElem, _lblMassHint, _lblTempHint;
-        Label _lblStressState, _lblMoraleState, _lblMoraleExpState;
+        Button _btnPickElem, _btnTech, _btnTechPath, _btnSkillAdd, _btnSkillAll, _btnDupe, _btnSpawn, _btnReveal, _btnStudyAll;
+        Label _lblElem, _lblPhaseHint;
+        Label _lblStressState, _lblMoraleState, _lblMoraleExpState, _lblWorkState, _lblLogHdr;
+        Button _btnClearLog;
+        GroupBox _gAdvanced;
+        readonly CheckBox[] _chkSurv = new CheckBox[5];
+        int _baseClientH, _advDeltaH, _baseLogHdrTop, _baseLogTop, _baseClearLogTop;
+        Action _settingsChangedHandler;
         string _detectedGameDir;
         List<DlcEntry> _detectedDlcs;
         SeedFinderForm _seedFinderForm;
@@ -137,7 +145,7 @@ namespace ONITrainer
         public MainForm()
         {
             Text = "ONI 修改器  ·  Oxygen Not Included";
-            ClientSize = new Size(840, 634);
+            ClientSize = new Size(840, 664);
             MinimumSize = Size;
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = C(BG);
@@ -146,6 +154,17 @@ namespace ONITrainer
             Font = _fontReg;
             BuildUI();
             DpiHelper.ScaleLayout(this);
+
+            float scale = DpiHelper.GetDpiScale();
+            _baseClientH = ClientSize.Height;
+            _advDeltaH = (int)Math.Round(134 * scale);
+            _baseLogHdrTop = _lblLogHdr.Top;
+            _baseClearLogTop = _btnClearLog.Top;
+            _baseLogTop = _log.Top;
+
+            _settingsChangedHandler = OnGlobalSettingsChanged;
+            TrainerSettings.SettingsChanged += _settingsChangedHandler;
+            ApplyAdvancedModeLayout();
         }
 
         Color C(int rgb) { return Color.FromArgb(255, (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF); }
@@ -189,7 +208,7 @@ namespace ONITrainer
 
 
             GroupBox g1 = Card("01  科技解锁", 16, 10, 398, 98);
-            g1.Controls.Add(Lbl("F5 解锁全部科技；科技页点选目标后按 F9 解锁前置链", 16, 24, 368, SUB));
+            g1.Controls.Add(Lbl("快捷键可在「设置」自定义；科技页点选目标可解锁前置链", 16, 24, 368, SUB));
             _btnTech = B("全部解锁  [F5]", 16, 54, 184, 32, true);
             _btnTech.Click += (s, e) => TechAll();
             _btnTechPath = B("选中路径  [F9]", 210, 54, 172, 32, false);
@@ -209,9 +228,9 @@ namespace ONITrainer
             g2.Controls.Add(_btnDupe);
 
 
-            GroupBox g3 = Card("03  单格刷资源", 16, 116, 808, 112);
-            g3.Controls.Add(Lbl("元素", 16, 27, 40, TXT));
-            _btnPickElem = B("选择元素…", 60, 23, 116, 28, false);
+            GroupBox g3 = Card("03  单格刷资源", 16, 116, 808, 142);
+            g3.Controls.Add(Lbl("元素", 16, 25, 40, TXT));
+            _btnPickElem = B("选择元素…", 60, 21, 116, 28, false);
             _btnPickElem.Click += (s, e) => PickElement();
             g3.Controls.Add(_btnPickElem);
             _lblElem = new Label
@@ -219,33 +238,43 @@ namespace ONITrainer
                 Text = "（进入存档后自动加载）",
                 ForeColor = C(ACC),
                 Font = _fontBold,
-                Location = new Point(188, 27),
+                Location = new Point(188, 25),
                 Size = new Size(604, 22)
             };
             g3.Controls.Add(_lblElem);
 
-            g3.Controls.Add(Lbl("质量", 16, 61, 40, TXT));
-            _numMass = Num(60, 58, 92, 0.01M, 100000M, 1.8M, 2, 0.1M);
+            g3.Controls.Add(Lbl("质量", 16, 58, 40, TXT));
+            _numMass = Num(60, 55, 92, 0.01M, 100000M, 1M, 2, 0.1M);
             g3.Controls.Add(_numMass);
-            g3.Controls.Add(Lbl("kg", 156, 61, 28, SUB));
+            g3.Controls.Add(Lbl("kg", 156, 58, 28, SUB));
 
-            g3.Controls.Add(Lbl("温度", 196, 61, 40, TXT));
-            _numTemp = Num(240, 58, 92, -273M, 9726M, 20M, 1, 1M);
+            g3.Controls.Add(Lbl("温度", 196, 58, 40, TXT));
+            _numTemp = Num(240, 55, 92, -273M, 9726M, 20M, 1, 1M);
             g3.Controls.Add(_numTemp);
-            g3.Controls.Add(Lbl("℃", 336, 61, 24, SUB));
+            g3.Controls.Add(Lbl("℃", 336, 58, 24, SUB));
 
-            _btnSpawn = B("在鼠标格刷出  [F8]", 384, 56, 206, 28, true);
+            _btnSpawn = B("在鼠标格刷出  [F8]", 384, 53, 206, 28, true);
             _btnSpawn.Click += (s, e) => Spawn();
             g3.Controls.Add(_btnSpawn);
-            g3.Controls.Add(Lbl("仅支持气体 / 液体 / 真空格", 602, 61, 192, SUB));
+            g3.Controls.Add(Lbl("仅支持气体 / 液体 / 真空格", 602, 58, 192, SUB));
 
-            _lblMassHint = Lbl("质量建议：—", 16, 88, 368, SUB);
-            _lblTempHint = Lbl("温度建议：—", 388, 88, 404, SUB);
-            g3.Controls.Add(_lblMassHint);
-            g3.Controls.Add(_lblTempHint);
+            _lblPhaseHint = Lbl("相变边界：—", 16, 84, 776, SUB);
+            g3.Controls.Add(_lblPhaseHint);
+
+            g3.Controls.Add(Lbl("常用元素", 16, 112, 64, SUB));
+            Button pO2 = B("氧气", 84, 108, 66, 26, false); pO2.Click += (s, e) => ApplyElemPreset("氧气");
+            Button pWater = B("水", 156, 108, 66, 26, false); pWater.Click += (s, e) => ApplyElemPreset("水");
+            Button pOil = B("石油", 228, 108, 66, 26, false); pOil.Click += (s, e) => ApplyElemPreset("石油");
+            Button pSuper = B("超冷剂", 300, 108, 78, 26, false); pSuper.Click += (s, e) => ApplyElemPreset("超冷");
+            Button pH2 = B("液氢", 384, 108, 66, 26, false); pH2.Click += (s, e) => ApplyElemPreset("液态氢");
+            g3.Controls.Add(pO2);
+            g3.Controls.Add(pWater);
+            g3.Controls.Add(pOil);
+            g3.Controls.Add(pSuper);
+            g3.Controls.Add(pH2);
 
 
-            GroupBox g4 = Card("04  游戏倍速", 16, 236, 398, 68);
+            GroupBox g4 = Card("04  游戏倍速", 16, 266, 398, 68);
             g4.Controls.Add(Lbl("倍速", 16, 29, 40, TXT));
             _numSpeed = Num(60, 26, 74, 1M, 100M, 5M, 0, 1M);
             g4.Controls.Add(_numSpeed);
@@ -257,15 +286,16 @@ namespace ONITrainer
             g4.Controls.Add(bsApply);
             g4.Controls.Add(bsReset);
 
-            GroupBox g5 = Card("05  地图视野", 426, 236, 398, 68);
-            _btnReveal = B("一键揭开全图迷雾", 16, 25, 186, 28, true);
+            GroupBox g5 = Card("05  地图视野", 426, 266, 398, 68);
+            _btnReveal = B("一键揭开全图迷雾", 16, 25, 180, 28, true);
             _btnReveal.Click += (s, e) => RevealAll();
+            _btnStudyAll = B("分析全部间歇泉", 204, 25, 178, 28, false);
+            _btnStudyAll.Click += (s, e) => StudyAllGeysers();
             g5.Controls.Add(_btnReveal);
-            g5.Controls.Add(Lbl("揭开已探索星球并显影火山/遗迹", 210, 29, 178, SUB));
+            g5.Controls.Add(_btnStudyAll);
 
 
-            GroupBox g6 = Card("06  复制人状态（压力 / 士气 / 士气需求）", 16, 312, 808, 134);
-
+            GroupBox g6 = Card("06  复制人状态（压力 / 士气 / 士气需求）", 16, 342, 808, 134);
 
             g6.Controls.Add(Lbl("压力上限", 16, 28, 92, TXT));
             _numStress = Num(112, 25, 64, 0M, 100M, 0M, 0, 1M);
@@ -276,7 +306,6 @@ namespace ONITrainer
             _lblStressState = StateLbl(582, 28);
             g6.Controls.Add(bStrOn); g6.Controls.Add(bStrOff); g6.Controls.Add(_lblStressState);
 
-
             g6.Controls.Add(Lbl("士气加成", 16, 62, 92, TXT));
             _numMorale = Num(112, 59, 64, 0M, 90M, 30M, 0, 1M);
             g6.Controls.Add(_numMorale);
@@ -285,7 +314,6 @@ namespace ONITrainer
             Button bMorOff = B("关闭", 482, 58, 82, 26, false); bMorOff.Click += (s, e) => OffMorale();
             _lblMoraleState = StateLbl(582, 62);
             g6.Controls.Add(bMorOn); g6.Controls.Add(bMorOff); g6.Controls.Add(_lblMoraleState);
-
 
             g6.Controls.Add(Lbl("士气需求上限", 16, 96, 92, TXT));
             _numMoraleExp = Num(112, 93, 64, 0M, 100M, 0M, 0, 1M);
@@ -297,18 +325,68 @@ namespace ONITrainer
             g6.Controls.Add(bExpOn); g6.Controls.Add(bExpOff); g6.Controls.Add(_lblMoraleExpState);
 
 
-            body.Controls.Add(new Label
+            _gAdvanced = Card("07  高级功能（建造挖掘提速 / 生存锁 / 格子微调 / 复制人编辑）", 16, 484, 808, 126);
+            _gAdvanced.Visible = false;
+
+            _gAdvanced.Controls.Add(Lbl("建造挖掘提速", 16, 26, 98, TXT));
+            Button bWork50 = B("加速 +50", 118, 22, 92, 26, true); bWork50.Click += (s, e) => SetWorkSpeed(50);
+            Button bWork200 = B("极速 +200", 216, 22, 96, 26, false); bWork200.Click += (s, e) => SetWorkSpeed(200);
+            Button bWork0 = B("恢复", 318, 22, 62, 26, false); bWork0.Click += (s, e) => SetWorkSpeed(0);
+            _lblWorkState = StateLbl(388, 26); _lblWorkState.Width = 186;
+            Button bDupeEdit = B("复制人属性与特质编辑器…", 584, 21, 208, 28, true);
+            bDupeEdit.Click += (s, e) => OpenDupeEditor();
+            _gAdvanced.Controls.Add(bWork50);
+            _gAdvanced.Controls.Add(bWork200);
+            _gAdvanced.Controls.Add(bWork0);
+            _gAdvanced.Controls.Add(_lblWorkState);
+            _gAdvanced.Controls.Add(bDupeEdit);
+
+            _gAdvanced.Controls.Add(Lbl("生存状态持续锁", 16, 61, 102, TXT));
+            string[] survLabels = { "不饿/满电", "不困", "不内急/无污", "不窒息", "满血/抗辐" };
+            int[] survWidths = { 96, 64, 108, 76, 96 };
+            int sx = 122;
+            for (int i = 0; i < 5; i++)
+            {
+                CheckBox cb = new CheckBox
+                {
+                    Text = survLabels[i],
+                    ForeColor = C(TXT),
+                    Font = _fontReg,
+                    Location = new Point(sx, 59),
+                    Size = new Size(survWidths[i], 22)
+                };
+                cb.CheckedChanged += (s, e) => OnSurvivalCheckChanged();
+                _chkSurv[i] = cb;
+                _gAdvanced.Controls.Add(cb);
+                sx += survWidths[i] + 4;
+            }
+            Button bSurvNow = B("立即补满全员", 602, 57, 190, 26, false);
+            bSurvNow.Click += (s, e) => SurvivalNow();
+            _gAdvanced.Controls.Add(bSurvNow);
+
+            _gAdvanced.Controls.Add(Lbl("鼠标格工具", 16, 95, 84, TXT));
+            Button bHeat = B("升温 +20℃", 104, 91, 96, 26, false); bHeat.Click += (s, e) => RunCellTool("CELLTEMP 20", "鼠标格升温 +20℃");
+            Button bCool = B("降温 -20℃", 206, 91, 96, 26, false); bCool.Click += (s, e) => RunCellTool("CELLTEMP -20", "鼠标格降温 -20℃");
+            Button bVac = B("单格抽真空", 308, 91, 96, 26, false); bVac.Click += (s, e) => RunCellTool("CELLVAC 0", "单格抽真空");
+            _gAdvanced.Controls.Add(bHeat);
+            _gAdvanced.Controls.Add(bCool);
+            _gAdvanced.Controls.Add(bVac);
+            _gAdvanced.Controls.Add(Lbl("仅作用气/液格；不启沙盒、不锁成就", 416, 95, 376, SUB));
+
+
+            _lblLogHdr = new Label
             {
                 Text = "任务日志",
                 ForeColor = C(ACC),
                 Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
-                Location = new Point(18, 454),
+                Location = new Point(18, 484),
                 Size = new Size(120, 22)
-            });
-            Button btnClearLog = B("清空日志", 744, 452, 80, 24, false);
-            btnClearLog.Font = new Font("Microsoft YaHei UI", 8.5F);
-            btnClearLog.Click += (s, e) => { _log.Clear(); };
-            body.Controls.Add(btnClearLog);
+            };
+            body.Controls.Add(_lblLogHdr);
+            _btnClearLog = B("清空日志", 744, 482, 80, 24, false);
+            _btnClearLog.Font = new Font("Microsoft YaHei UI", 8.5F);
+            _btnClearLog.Click += (s, e) => { _log.Clear(); };
+            body.Controls.Add(_btnClearLog);
 
             _log = new TextBox
             {
@@ -316,7 +394,7 @@ namespace ONITrainer
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 BorderStyle = BorderStyle.FixedSingle,
-                Location = new Point(16, 480),
+                Location = new Point(16, 510),
                 Size = new Size(808, 86),
                 BackColor = C(CARD),
                 ForeColor = C(TXT),
@@ -329,6 +407,7 @@ namespace ONITrainer
             body.Controls.Add(g4);
             body.Controls.Add(g5);
             body.Controls.Add(g6);
+            body.Controls.Add(_gAdvanced);
             body.Controls.Add(_log);
 
             Controls.Add(body);
@@ -445,9 +524,85 @@ namespace ONITrainer
             _stressActive = false;
             _moraleActive = false;
             _moraleExpActive = false;
+            _workSpeedActive = false;
+            _survivalMask = 0;
+            _backupDoneForPtr = 0;
             SetToggleBadge(_lblStressState, false, "未开启");
             SetToggleBadge(_lblMoraleState, false, "未开启");
             SetToggleBadge(_lblMoraleExpState, false, "未开启");
+            SetToggleBadge(_lblWorkState, false, "未开启");
+            SetUi(() =>
+            {
+                _suppressSurvivalCheck = true;
+                for (int i = 0; i < _chkSurv.Length; i++)
+                    if (_chkSurv[i] != null) _chkSurv[i].Checked = false;
+                _suppressSurvivalCheck = false;
+            });
+        }
+
+        void OnGlobalSettingsChanged()
+        {
+            SetUi(() =>
+            {
+                ApplyHotkeys();
+                RefreshHotkeyLabels();
+                ApplyAdvancedModeLayout();
+            });
+        }
+
+        void ApplyHotkeys()
+        {
+            if (!IsHandleCreated) return;
+            const uint MOD_NOREPEAT = 0x4000;
+            for (int i = 1; i <= 6; i++)
+                UnregisterHotKey(Handle, i);
+            if (!TrainerSettings.EnableHotkeys) return;
+            int[] keys = TrainerSettings.GetHotkeys();
+            for (int i = 0; i < 6 && i < keys.Length; i++)
+            {
+                if (keys[i] > 0)
+                    RegisterHotKey(Handle, i + 1, MOD_NOREPEAT, (uint)keys[i]);
+            }
+        }
+
+        void RefreshHotkeyLabels()
+        {
+            bool en = TrainerSettings.EnableHotkeys;
+            int[] keys = TrainerSettings.GetHotkeys();
+            string s0 = (en && keys[0] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[0]) + "]") : "";
+            string s1 = (en && keys[1] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[1]) + "]") : "";
+            string s2 = (en && keys[2] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[2]) + "]") : "";
+            string s3 = (en && keys[3] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[3]) + "]") : "";
+            string s4 = (en && keys[4] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[4]) + "]") : "";
+            string s5 = (en && keys[5] > 0) ? ("  [" + TrainerSettings.FormatVkName(keys[5]) + "]") : "";
+            if (_btnTech != null) _btnTech.Text = "全部解锁" + s0;
+            if (_btnSkillAdd != null) _btnSkillAdd.Text = "全体技能点 +1" + s1;
+            if (_btnSkillAll != null) _btnSkillAll.Text = "全体技能学满" + s2;
+            if (_btnSpawn != null) _btnSpawn.Text = "在鼠标格刷出" + s3;
+            if (_btnTechPath != null) _btnTechPath.Text = "选中路径" + s4;
+            if (_btnDupe != null) _btnDupe.Text = "按名字指定复制人技能点…" + s5;
+        }
+
+        void ApplyAdvancedModeLayout()
+        {
+            if (_gAdvanced == null || _lblLogHdr == null || _btnClearLog == null || _log == null) return;
+            bool adv = TrainerSettings.AdvancedMode;
+            _gAdvanced.Visible = adv;
+            int delta = adv ? _advDeltaH : 0;
+            _lblLogHdr.Top = _baseLogHdrTop + delta;
+            _btnClearLog.Top = _baseClearLogTop + delta;
+            _log.Top = _baseLogTop + delta;
+
+            int targetH = _baseClientH + delta;
+            Screen scr = Screen.FromControl(this);
+            int maxH = Math.Max(360, scr.WorkingArea.Height - 64);
+            if (targetH > maxH) targetH = maxH;
+            int ncW = Width - ClientSize.Width;
+            int ncH = Height - ClientSize.Height;
+            Size full = new Size(ClientSize.Width + ncW, targetH + ncH);
+            MinimumSize = full;
+            MaximumSize = full;
+            ClientSize = new Size(ClientSize.Width, targetH);
         }
 
         void Log(string s)
@@ -469,13 +624,8 @@ namespace ONITrainer
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            const uint MOD_NOREPEAT = 0x4000;
-            RegisterHotKey(Handle, 1, MOD_NOREPEAT, 0x74);
-            RegisterHotKey(Handle, 2, MOD_NOREPEAT, 0x75);
-            RegisterHotKey(Handle, 3, MOD_NOREPEAT, 0x76);
-            RegisterHotKey(Handle, 4, MOD_NOREPEAT, 0x77);
-            RegisterHotKey(Handle, 5, MOD_NOREPEAT, 0x78);
-            RegisterHotKey(Handle, 6, MOD_NOREPEAT, 0x79);
+            ApplyHotkeys();
+            RefreshHotkeyLabels();
         }
 
         protected override void OnShown(EventArgs e)
@@ -507,11 +657,55 @@ namespace ONITrainer
             });
             dlcScan.IsBackground = true;
             dlcScan.Start();
+
+            if (TrainerSettings.AutoCheckUpdate)
+                StartBackgroundUpdateCheck();
+        }
+
+        void StartBackgroundUpdateCheck()
+        {
+            Thread upd = new Thread(() =>
+            {
+                UpdateCheckResult res = AppUpdater.CheckLatest(10000);
+                if (_closing || IsDisposed || !IsHandleCreated) return;
+                if (!res.Success)
+                {
+                    if (!string.IsNullOrEmpty(res.Error))
+                        Log("[更新] 自动检查失败：" + res.Error);
+                    return;
+                }
+                if (res.HasUpdate)
+                {
+                    SetUi(() =>
+                    {
+                        if (_closing || IsDisposed) return;
+                        Log("[更新] 发现新版本 " + res.LatestTag + "（当前 " + AppUpdater.GetCurrentVersionDisplay() + "）");
+                        using (UpdateDialog dlg = new UpdateDialog(res, RequestExitForUpdate))
+                            dlg.ShowDialog(this);
+                    });
+                }
+            });
+            upd.IsBackground = true;
+            upd.Start();
+        }
+
+        void RequestExitForUpdate()
+        {
+            SetUi(() =>
+            {
+                try
+                {
+                    if (_seedFinderForm != null && !_seedFinderForm.IsDisposed)
+                        _seedFinderForm.Close();
+                }
+                catch { }
+                Close();
+            });
         }
 
         void OpenSettings()
         {
-            using (SettingsForm f = new SettingsForm())
+            using (SettingsForm f = new SettingsForm(RequestExitForUpdate))
                 f.ShowDialog(this);
         }
 
@@ -833,17 +1027,13 @@ namespace ONITrainer
             if (_curElem == null)
             {
                 _lblElem.Text = _inSave ? "（未选择）" : "（进入存档后自动加载）";
-                if (_lblMassHint != null) _lblMassHint.Text = "质量建议：—";
-                if (_lblTempHint != null) _lblTempHint.Text = "温度建议：—";
+                if (_lblPhaseHint != null) _lblPhaseHint.Text = "相变边界：—";
                 return;
             }
             double lo = _curElem.LowTemp - 273.15, hi = _curElem.HighTemp - 273.15;
-            _lblElem.Text = _curElem.Name + "（" + _curElem.StateLabel() + "，相变 " +
-                lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃，上限 " + _curElem.MaxMass.ToString("0.#") + " kg）";
-            if (_lblMassHint != null)
-                _lblMassHint.Text = "质量建议：0 ~ " + _curElem.MaxMass.ToString("0.#") + " kg";
-            if (_lblTempHint != null)
-                _lblTempHint.Text = "温度建议：" + lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃";
+            _lblElem.Text = _curElem.Name + "（" + _curElem.StateLabel() + "）";
+            if (_lblPhaseHint != null)
+                _lblPhaseHint.Text = "相变边界：" + lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃";
         }
 
         void PickElement()
@@ -855,9 +1045,6 @@ namespace ONITrainer
                 {
                     _curElem = f.Selected;
                     UpdateElemLabel();
-                    float def = _curElem.MaxMass;
-                    if (def > 0f && def <= (float)_numMass.Maximum)
-                        _numMass.Value = (decimal)Math.Round(def, 2);
                 }
             }
         }
@@ -876,16 +1063,84 @@ namespace ONITrainer
             return s.Trim();
         }
 
+        void EnsureAutoBackupOnce()
+        {
+            if (!TrainerSettings.AutoBackupSave || !_inSave || _bridge == null) return;
+            long ptr = _lastGamePtr;
+            if (ptr == 0 || _backupDoneForPtr == ptr) return;
+            try
+            {
+                string err;
+                string savePath = _bridge.RunHelperCmd("SAVEPATH", out err, 2500);
+                if (!string.IsNullOrEmpty(savePath) && File.Exists(savePath))
+                {
+                    string bak = savePath + ".bak";
+                    File.Copy(savePath, bak, true);
+                    _backupDoneForPtr = ptr;
+                    Log("[保护] 已自动备份存档至 " + Path.GetFileName(bak));
+                }
+            }
+            catch { }
+        }
+
+        void NotifyInGame(string msg)
+        {
+            if (!TrainerSettings.ShowInGameToast || !_inSave || _closing || string.IsNullOrEmpty(msg)) return;
+            Bridge br = _bridge;
+            if (br == null) return;
+            Thread t = new Thread(() =>
+            {
+                try
+                {
+                    string err;
+                    br.RunHelperCmd("POPFX " + msg, out err, 1500);
+                }
+                catch { }
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        void ApplyElemPreset(string keyword)
+        {
+            if (_allElems.Count == 0)
+            {
+                Log("[未就绪] 进入存档后即可快捷选择元素");
+                return;
+            }
+            Elem match = null;
+            if (keyword == "氧气")
+                match = _allElems.Find(x => x.Name == "氧气") ?? _allElems.Find(x => x.Name.Contains("氧") && !x.Name.Contains("污") && (x.State & 3) == 1);
+            else if (keyword == "水")
+                match = _allElems.Find(x => x.Name == "水") ?? _allElems.Find(x => (x.State & 3) == 2 && x.Name.Contains("水") && !x.Name.Contains("污") && !x.Name.Contains("盐"));
+            else
+                match = _allElems.Find(x => x.Name == keyword) ?? _allElems.Find(x => x.Name.Contains(keyword));
+
+            if (match == null)
+            {
+                Log("[提示] 当前存档元素列表中未找到元素：" + keyword);
+                return;
+            }
+            _curElem = match;
+            UpdateElemLabel();
+            double lo = match.LowTemp - 273.15, hi = match.HighTemp - 273.15;
+            Log("[完成] 已选择元素：" + match.Name + "（相变边界 " + lo.ToString("0.#") + "℃ ~ " + hi.ToString("0.#") + "℃）");
+        }
+
 
         void TechAll()
         {
             if (!EnsureReady()) return;
             RunBg("科技全部解锁", () =>
             {
+                EnsureAutoBackupOnce();
                 string resp = _bridge.Cmd("RESEARCHALL", 1000, 6000);
                 int count;
                 if (ParseDone(resp, out count))
+                {
                     Log("[完成] 科技树已全部解锁（" + count + " 项，建造菜单已刷新）");
+                    NotifyInGame("全部科技已解锁 (" + count + ")");
+                }
                 else
                     Log("[失败] 科技全部解锁：" + ErrReason(resp));
             });
@@ -896,16 +1151,20 @@ namespace ONITrainer
             if (!EnsureReady()) return;
             RunBg("选中科技路径解锁", () =>
             {
+                EnsureAutoBackupOnce();
                 string resp = _bridge.Cmd("RESEARCHPATHCUR", 1000, 5000);
                 if (resp == "ERR no-selection")
                 {
-                    ShowPopup("请先在科技页面点击一个目标科技，再按 F9。");
+                    ShowPopup("请先在科技页面点击一个目标科技，再执行前置路径解锁。");
                     Log("[取消] 未在科技页点选目标科技");
                     return;
                 }
                 int count;
                 if (ParseDone(resp, out count))
+                {
                     Log("[完成] 选中科技及前置链已解锁（" + count + " 项）");
+                    NotifyInGame("科技路径已解锁 (" + count + ")");
+                }
                 else
                     Log("[失败] 选中路径解锁：" + ErrReason(resp));
             });
@@ -972,6 +1231,7 @@ namespace ONITrainer
             if (!EnsureReady()) return;
             RunBg(all ? "全体技能学满" : "全体技能点 +1", () =>
             {
+                EnsureAutoBackupOnce();
                 RefreshWorld();
                 EnsureSkillScan();
                 HashSet<long> live = ReadLiveIds();
@@ -1013,10 +1273,12 @@ namespace ONITrainer
                         Log("[完成] 全体技能已学满（" + ok + " 名复制人）");
                     else
                         Log("[部分完成] 技能学满：" + ok + "/" + targets.Count + " 名复制人");
+                    NotifyInGame("全体技能已学满");
                 }
                 else
                 {
                     Log("[完成] 全体技能点 +1（" + targets.Count + " 名复制人，上限 50）");
+                    NotifyInGame("全员技能点 +1");
                 }
             });
         }
@@ -1026,6 +1288,7 @@ namespace ONITrainer
             if (!EnsureReady()) return;
             RunBg("读取复制人列表", () =>
             {
+                EnsureAutoBackupOnce();
                 EnsureSkillScan();
                 HashSet<long> live = ReadLiveIds();
                 List<DupeInfo> list = new List<DupeInfo>();
@@ -1104,6 +1367,7 @@ namespace ONITrainer
             if (mass <= 0f) { Log("[取消] 质量必须大于 0"); return; }
             RunBg("单格刷资源", () =>
             {
+                EnsureAutoBackupOnce();
                 RefreshWorld();
                 long pl = Mem.ReadU64(_info.PlayerField);
                 if (pl == 0) { Log("[失败] 无法读取鼠标位置"); return; }
@@ -1124,7 +1388,7 @@ namespace ONITrainer
                 string curName = curEl != null ? curEl.Name : ("元素" + curIdx);
                 if ((state & 3) == 3)
                 {
-                    ShowPopup("目标格是固体（" + curName + "），无法刷入。\n请把鼠标移到气体、液体或真空格再按 F8。");
+                    ShowPopup("目标格是固体（" + curName + "），无法刷入。\n请把鼠标移到气体、液体或真空格再刷出。");
                     Log("[取消] 目标格是固体（" + curName + "）");
                     return;
                 }
@@ -1133,7 +1397,10 @@ namespace ONITrainer
                 string resp = _bridge.Cmd(cmd, 1000, 4000);
                 int res;
                 if (ParseDone(resp, out res))
+                {
                     Log("[完成] 已刷出 " + el.Name + "（" + mass + " kg，" + tempC.ToString("0.#") + "℃）");
+                    NotifyInGame("刷出 " + el.Name);
+                }
                 else
                     Log("[失败] 刷资源：" + ErrReason(resp));
             });
@@ -1151,6 +1418,7 @@ namespace ONITrainer
                 {
                     _speedApplied = (v != 1);
                     Log(v == 1 ? "[完成] 游戏倍速已恢复 1x" : "[完成] 游戏倍速已设为 " + v + "x");
+                    NotifyInGame(v == 1 ? "倍速已恢复 1x" : ("倍速 " + v + "x"));
                 }
                 else
                     Log("[失败] 设置倍速：" + ErrReason(resp));
@@ -1163,6 +1431,7 @@ namespace ONITrainer
             if (!EnsureReady()) return;
             RunBg("揭开全图迷雾", () =>
             {
+                EnsureAutoBackupOnce();
                 string resp = _bridge.Cmd("REVEAL", 1000, 10000);
                 int spawned;
                 if (ParseDone(resp, out spawned))
@@ -1171,9 +1440,30 @@ namespace ONITrainer
                         Log("[完成] 已揭开迷雾并立即显影 " + spawned + " 处火山/间歇泉/遗迹对象");
                     else
                         Log("[完成] 已揭开已探索星球迷雾");
+                    NotifyInGame("迷雾已全开");
                 }
                 else
                     Log("[失败] 揭开迷雾：" + ErrReason(resp));
+            });
+        }
+
+        void StudyAllGeysers()
+        {
+            if (!EnsureReady()) return;
+            RunBg("分析全部间歇泉", () =>
+            {
+                EnsureAutoBackupOnce();
+                string err;
+                string res = _bridge.RunHelperCmd("STUDYALL", out err, 6000);
+                if (res != null)
+                {
+                    Log("[完成] 间歇泉一键分析完成：" + res);
+                    NotifyInGame("间歇泉已全部分析");
+                }
+                else
+                {
+                    Log("[失败] 分析全部间歇泉：" + ErrReason(err));
+                }
             });
         }
 
@@ -1184,6 +1474,7 @@ namespace ONITrainer
             int v = (int)_numStress.Value;
             RunBg("设置压力上限", () =>
             {
+                EnsureAutoBackupOnce();
                 string resp = _bridge.Cmd("STRESS " + v, 1000, 4000);
                 int res;
                 if (ParseDone(resp, out res))
@@ -1221,6 +1512,7 @@ namespace ONITrainer
             int v = (int)_numMorale.Value;
             RunBg("设置士气加成", () =>
             {
+                EnsureAutoBackupOnce();
                 EnsureSkillScan();
                 HashSet<long> liveM = ReadLiveIds();
                 List<long> targets = CollectLiveResumes(liveM);
@@ -1309,26 +1601,132 @@ namespace ONITrainer
         }
 
 
+        void SetWorkSpeed(int bonus)
+        {
+            if (!EnsureReady()) return;
+            RunBg("建造挖掘提速", () =>
+            {
+                string err;
+                string res = _bridge.RunHelperCmd("WORKSPEED " + bonus, out err, 5000);
+                if (res != null)
+                {
+                    _workSpeedActive = (bonus > 0);
+                    SetToggleBadge(_lblWorkState, _workSpeedActive, _workSpeedActive ? ("已开启：+" + bonus) : "未开启");
+                    Log(bonus > 0 ? "[完成] 建造/挖掘/机械/移速 +" + bonus + "（成就安全）" : "[完成] 建造/挖掘提速已恢复默认");
+                    NotifyInGame(bonus > 0 ? ("建造挖掘 +" + bonus) : "提速已恢复");
+                }
+                else
+                    Log("[失败] 建造挖掘提速：" + ErrReason(err));
+            });
+        }
+
+        void OnSurvivalCheckChanged()
+        {
+            if (_suppressSurvivalCheck) return;
+            int mask = 0;
+            for (int i = 0; i < _chkSurv.Length; i++)
+            {
+                if (_chkSurv[i] != null && _chkSurv[i].Checked) mask |= (1 << i);
+            }
+            if (!EnsureReady())
+            {
+                _suppressSurvivalCheck = true;
+                for (int i = 0; i < _chkSurv.Length; i++)
+                    if (_chkSurv[i] != null) _chkSurv[i].Checked = ((_survivalMask & (1 << i)) != 0);
+                _suppressSurvivalCheck = false;
+                return;
+            }
+            RunBg("设置生存状态锁", () =>
+            {
+                EnsureAutoBackupOnce();
+                string err;
+                if (_bridge.SetSurvivalMask(mask, out err))
+                {
+                    _survivalMask = mask;
+                    Log(mask == 0 ? "[完成] 生存状态持续锁已全部关闭" : "[完成] 生存状态持续锁已更新 (mask=" + mask + ")");
+                }
+                else
+                {
+                    Log("[失败] 生存状态锁：" + ErrReason(err));
+                }
+            });
+        }
+
+        void SurvivalNow()
+        {
+            if (!EnsureReady()) return;
+            RunBg("立即补满全员生存状态", () =>
+            {
+                EnsureAutoBackupOnce();
+                string err;
+                string res = _bridge.RunHelperCmd("SURVIVAL_NOW", out err, 4000);
+                if (res != null)
+                {
+                    Log("[完成] 已立即补满全员饱食/电量/体力/氧气/生命并清除如厕与辐射");
+                    NotifyInGame("全员状态已补满");
+                }
+                else
+                    Log("[失败] 立即补满：" + ErrReason(err));
+            });
+        }
+
+        void RunCellTool(string cmd, string title)
+        {
+            if (!EnsureReady()) return;
+            RunBg(title, () =>
+            {
+                EnsureAutoBackupOnce();
+                string err;
+                string res = _bridge.RunHelperCmd(cmd, out err, 4000);
+                if (res != null)
+                {
+                    Log("[完成] " + title + "：" + res);
+                    NotifyInGame(title);
+                }
+                else if (err != null && err.Contains("solid"))
+                {
+                    ShowPopup("目标格是固体砖块，为保证安全已跳过（仅对气体与液体生效）。");
+                    Log("[取消] " + title + "：跳过固体格");
+                }
+                else
+                    Log("[失败] " + title + "：" + ErrReason(err));
+            });
+        }
+
+        void OpenDupeEditor()
+        {
+            if (!EnsureReady()) return;
+            string err;
+            if (!_bridge.EnsureHelperLoaded(out err))
+            {
+                Log("[失败] 加载组件：" + (err ?? "未知"));
+                return;
+            }
+            EnsureAutoBackupOnce();
+            using (DupeEditorForm f = new DupeEditorForm(_bridge, Log))
+                f.ShowDialog(this);
+        }
+
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _closing = true;
             try { _stopWatch.Set(); } catch { }
-            UnregisterHotKey(Handle, 1);
-            UnregisterHotKey(Handle, 2);
-            UnregisterHotKey(Handle, 3);
-            UnregisterHotKey(Handle, 4);
-            UnregisterHotKey(Handle, 5);
-            UnregisterHotKey(Handle, 6);
+            if (_settingsChangedHandler != null)
+                TrainerSettings.SettingsChanged -= _settingsChangedHandler;
+            for (int i = 1; i <= 6; i++)
+                UnregisterHotKey(Handle, i);
 
             bool needSpeed = _speedApplied;
             bool needStress = _stressActive;
             bool needMorale = _moraleActive;
             bool needMoraleExp = _moraleExpActive;
+            bool needHelperCleanup = _workSpeedActive || _survivalMask != 0;
             Bridge br = _bridge;
             int pid = _pid;
             IntPtr ts = _timeScale;
 
-            if ((needSpeed || needStress || needMorale || needMoraleExp) && Bridge.IsProcessAlive(pid))
+            if ((needSpeed || needStress || needMorale || needMoraleExp || needHelperCleanup) && Bridge.IsProcessAlive(pid))
             {
                 try { Hide(); } catch { }
                 if (needSpeed && ts != IntPtr.Zero)
@@ -1343,13 +1741,13 @@ namespace ONITrainer
                         {
                             string cmd = string.Format(CultureInfo.InvariantCulture, "CLEANUP {0} {1} {2} {3}",
                                 needSpeed ? 1 : 0, needStress ? 1 : 0, needMorale ? 1 : 0, needMoraleExp ? 1 : 0);
-                            br.Cmd(cmd, 200, 300);
+                            br.Cmd(cmd, 200, 350);
                         }
                         catch { }
                     });
                     t.IsBackground = true;
                     t.Start();
-                    t.Join(450);
+                    t.Join(480);
                 }
             }
 

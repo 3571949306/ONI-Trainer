@@ -570,9 +570,14 @@ enum {
     QC_MORALE_EXP,
     QC_REVEAL,
     QC_CLEANUP,
+    QC_HELPER_CMD,
+    QC_SURVIVAL,
 };
 
 static volatile float g_stress_cap = -1.f;
+static volatile int g_survival_mask = 0;
+static char g_hcmd_in[2048] = {0};
+static char g_hcmd_out[65536] = {0};
 static int g_frame = 0;
 static int set_stress_cap(float cap);
 static int set_morale_floor(float floor);
@@ -590,6 +595,8 @@ static int research_complete_path(MonoObject* tech);
 static int research_complete_all();
 static int refresh_plan();
 static int reveal_all();
+static int run_helper_exec(const char* inStr, char* outBuf, int outCap);
+static void run_helper_tick(int mask);
 static void* g_game_update_tramp = 0;
 
 #define QC_CAP 512
@@ -2010,11 +2017,21 @@ static void qc_dispatch(QcCmd* c) {
         case QC_MORALE_RESUME: { res = morale_resume((MonoObject*)c->a, c->f1); logf("main morale_resume:%.1f n:%d", c->f1, res); break; }
         case QC_MORALE_EXP: { res = set_morale_exp_cap(c->f1); logf("main morale_exp_cap:%.1f n:%d", c->f1, res); break; }
         case QC_REVEAL: { res = reveal_all(); logf("main reveal:%d", res); break; }
+        case QC_HELPER_CMD: { res = run_helper_exec(g_hcmd_in, g_hcmd_out, sizeof(g_hcmd_out)); logf("main helper:%d", res); break; }
+        case QC_SURVIVAL: {
+            g_survival_mask = c->i1;
+            if (g_survival_mask != 0) run_helper_tick(g_survival_mask);
+            res = g_survival_mask;
+            logf("main survival:%d", res);
+            break;
+        }
         case QC_CLEANUP: {
+            g_survival_mask = 0;
             if (c->i1) feature_speed(1);
             if (c->i2) set_stress_cap(-1.f);
             if (c->f1 > 0.f) set_morale_floor(-1.f);
             if (c->f2 > 0.f) set_morale_exp_cap(-1.f);
+            run_helper_exec("CLEANUP", 0, 0);
             logf("main cleanup spd=%d str=%d mor=%d mexp=%d", c->i1, c->i2, c->f1 > 0.f ? 1 : 0, c->f2 > 0.f ? 1 : 0);
             res = 1;
             break;
@@ -2036,8 +2053,11 @@ static void game_update_hook(MonoObject* self) {
     }
     QcCmd c;
     while (qc_dequeue(&c)) qc_dispatch(&c);
-    if (g_stress_cap >= 0.f && ((++g_frame) & 31) == 0)
-        clamp_stress_all(g_stress_cap);
+    unsigned int f = (unsigned int)(++g_frame);
+    if ((f & 31u) == 0u) {
+        if (g_stress_cap >= 0.f) clamp_stress_all(g_stress_cap);
+        if (g_survival_mask != 0) run_helper_tick(g_survival_mask);
+    }
     ((void(*)(MonoObject*))g_game_update_tramp)(self);
 }
 
@@ -2189,7 +2209,63 @@ static void reply_sync(char* out, int outsz, QcCmd c, int timeoutMs) {
 
 static MonoImage* g_helper_img = 0;
 static MonoMethod* g_helper_preview = 0;
+static MonoMethod* g_helper_exec_main = 0;
+static MonoMethod* g_helper_tick_main = 0;
+static MonoMethod* g_helper_exec_menu = 0;
 static char g_helper_path[512] = {0};
+
+static int invoke_helper_str(MonoMethod* m, const char* inStr, char* outBuf, int outCap) {
+    if (!m) {
+        if (outBuf && outCap > 0) snprintf(outBuf, outCap, "ERR no-helper");
+        return -1;
+    }
+    MonoString* ms = m_string_new(g_domain, inStr ? inStr : "");
+    if (!ms) {
+        if (outBuf && outCap > 0) snprintf(outBuf, outCap, "ERR string");
+        return -2;
+    }
+    void* a[1] = { ms };
+    MonoObject* exc = 0;
+    MonoObject* ret = m_runtime_invoke(m, 0, a, &exc);
+    if (exc) {
+        char eb[512] = {0};
+        MonoClass* ec = m_object_get_class(exc);
+        MonoMethod* ts = ec ? find_method_chain(ec, "ToString", 0) : 0;
+        if (ts) {
+            MonoObject* exc2 = 0;
+            MonoObject* er = m_runtime_invoke(ts, exc, 0, &exc2);
+            if (er && !exc2) copy_mono_string((MonoString*)er, eb, sizeof(eb));
+        }
+        if (!eb[0]) snprintf(eb, sizeof(eb), "%s", (ec && m_class_get_name) ? m_class_get_name(ec) : "?");
+        logf("helper exc: %s", eb);
+        if (outBuf && outCap > 0) snprintf(outBuf, outCap, "ERR exc:%s", eb);
+        return -3;
+    }
+    if (!ret) {
+        if (outBuf && outCap > 0) snprintf(outBuf, outCap, "ERR null-ret");
+        return -4;
+    }
+    if (outBuf && outCap > 0) {
+        copy_mono_string((MonoString*)ret, outBuf, outCap);
+        if (!outBuf[0]) snprintf(outBuf, outCap, "ERR empty-ret");
+    }
+    return 1;
+}
+
+static int run_helper_exec(const char* inStr, char* outBuf, int outCap) {
+    return invoke_helper_str(g_helper_exec_main, inStr, outBuf, outCap);
+}
+
+static void run_helper_tick(int mask) {
+    if (!g_helper_tick_main || mask == 0) return;
+    void* a[1] = { &mask };
+    MonoObject* exc = 0;
+    m_runtime_invoke(g_helper_tick_main, 0, a, &exc);
+    if (exc) {
+        MonoClass* ec = m_object_get_class(exc);
+        logf("helper_tick exc=%s", (ec && m_class_get_name) ? m_class_get_name(ec) : "?");
+    }
+}
 
 
 static void proc_cmd(char* buf, char* out, int outsz) {
@@ -2237,9 +2313,13 @@ static void proc_cmd(char* buf, char* out, int outsz) {
         }
         g_helper_img = hi;
         g_helper_preview = em;
+        g_helper_exec_main = m_class_get_method(ec, "ExecMainThread", 1);
+        g_helper_tick_main = m_class_get_method(ec, "TickMainThread", 1);
+        g_helper_exec_menu = m_class_get_method(ec, "ExecMenuThread", 1);
         strncpy(g_helper_path, path, sizeof(g_helper_path) - 1);
         g_helper_path[sizeof(g_helper_path) - 1] = 0;
-        logf("LOADHELPER: ok img=%p method=%p", hi, em);
+        logf("LOADHELPER: ok img=%p prev=%p main=%p tick=%p menu=%p",
+             hi, em, g_helper_exec_main, g_helper_tick_main, g_helper_exec_menu);
         snprintf(out, outsz, "OK loaded");
         return;
     }
@@ -2251,31 +2331,53 @@ static void proc_cmd(char* buf, char* out, int outsz) {
         }
         if (!g_ready) init();
         if (!g_ready) { snprintf(out, outsz, "ERR not-ready"); return; }
-        if (!g_helper_preview) { snprintf(out, outsz, "ERR no-helper"); return; }
         const char* pargs = buf + 8;
         while (*pargs == ' ') ++pargs;
-        MonoString* ms = m_string_new(g_domain, pargs);
-        if (!ms) { snprintf(out, outsz, "ERR string"); return; }
-        void* a[1]; a[0] = ms;
-        MonoObject* exc = 0;
-        MonoObject* ret = m_runtime_invoke(g_helper_preview, 0, a, &exc);
-        if (exc) {
-            char eb[512] = {0};
-            MonoClass* ec = m_object_get_class(exc);
-            MonoMethod* ts = ec ? find_method_chain(ec, "ToString", 0) : 0;
-            if (ts) {
-                MonoObject* exc2 = 0;
-                MonoObject* er = m_runtime_invoke(ts, exc, 0, &exc2);
-                if (er && !exc2) copy_mono_string((MonoString*)er, eb, sizeof(eb));
-            }
-            if (!eb[0]) snprintf(eb, sizeof(eb), "%s", (ec && m_class_get_name) ? m_class_get_name(ec) : "?");
-            logf("PREVIEW exc: %s", eb);
-            snprintf(out, outsz, "ERR exc:%s", eb);
+        invoke_helper_str(g_helper_preview, pargs, out, outsz);
+        return;
+    }
+    if (!_strnicmp(buf, "MENUCMD ", 8)) {
+
+        if (world_instance()) {
+            snprintf(out, outsz, "ERR in-save");
             return;
         }
-        if (!ret) { snprintf(out, outsz, "ERR null-ret"); return; }
-        copy_mono_string((MonoString*)ret, out, outsz);
-        if (!out[0]) snprintf(out, outsz, "ERR empty-ret");
+        if (!g_ready) init();
+        if (!g_ready) { snprintf(out, outsz, "ERR not-ready"); return; }
+        const char* pargs = buf + 8;
+        while (*pargs == ' ') ++pargs;
+        invoke_helper_str(g_helper_exec_menu, pargs, out, outsz);
+        return;
+    }
+    if (!_strnicmp(buf, "HELPERCMD ", 10)) {
+        if (!g_game_update_tramp) { snprintf(out, outsz, "ERR no-sync"); return; }
+        if (!g_helper_exec_main) { snprintf(out, outsz, "ERR no-helper"); return; }
+        const char* pargs = buf + 10;
+        while (*pargs == ' ') ++pargs;
+        strncpy(g_hcmd_in, pargs, sizeof(g_hcmd_in) - 1);
+        g_hcmd_in[sizeof(g_hcmd_in) - 1] = 0;
+        g_hcmd_out[0] = 0;
+        QcCmd c; memset(&c, 0, sizeof(c)); c.type = QC_HELPER_CMD;
+        int res = 0;
+        int st = qc_run_sync(c, 5000, &res);
+        if (st == 1) {
+            strncpy(out, g_hcmd_out, outsz - 1);
+            out[outsz - 1] = 0;
+        } else if (st == 0) {
+            snprintf(out, outsz, "ERR main-timeout");
+        } else if (st == -2) {
+            snprintf(out, outsz, "ERR not-in-save");
+        } else {
+            snprintf(out, outsz, "ERR queue:%d", st);
+        }
+        return;
+    }
+    if (!_strnicmp(buf, "SURVIVAL", 8)) {
+        if (!g_game_update_tramp) { snprintf(out, outsz, "ERR no-sync"); return; }
+        if (!g_helper_tick_main) { snprintf(out, outsz, "ERR no-helper"); return; }
+        int mask = atoi(buf + 8);
+        QcCmd c; memset(&c, 0, sizeof(c)); c.type = QC_SURVIVAL; c.i1 = mask;
+        reply_sync(out, outsz, c, 3000);
         return;
     }
     if (!_stricmp(buf, "SAVESTATE")) {

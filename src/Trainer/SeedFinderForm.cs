@@ -62,10 +62,13 @@ namespace ONITrainer
         CheckedListBox _clbTraits;
         CheckBox _chkNoTraits;
         Button _btnExclude, _btnClearPlanet, _btnClearAll, _btnSearch, _btnStop, _btnNext, _btnCopyCoord, _btnCopySeed, _btnPreviewMap;
+        Button _btnSyncCfg, _btnFav, _btnHistory;
+        string _storyCode = "", _mixingCode = "";
+        SeedHistoryForm _historyForm;
 
         GroupBox _gPoiFilter;
-        ComboBox _cboPoiPlanet, _cboPoiType;
-        NumericUpDown _numPoiCount;
+        ComboBox _cboPoiPlanet, _cboPoiType, _cboPoiOp;
+        NumericUpDown _numPoiCount, _numPoiDist, _numPoiYield;
         ListBox _lstPoiRules;
         Button _btnAddPoi, _btnClearPoi;
 
@@ -126,9 +129,13 @@ namespace ONITrainer
                 Location = new Point(16, 4),
                 Size = new Size(190, 26)
             });
-            top.Controls.Add(Lbl("按已安装 DLC 与游戏官方规则模拟开局，后台自动寻找符合全部星球特质的坐标", 18, 30, 496, SUB));
+            top.Controls.Add(Lbl("按已安装 DLC 与游戏官方规则模拟开局，后台自动寻找符合全部星球特质的坐标", 18, 30, 448, SUB));
 
-            Button btnBrowse = B("选择游戏目录…", 716, 11, 110, 30, false);
+            _btnSyncCfg = B("读取游戏设置", 614, 11, 98, 30, false);
+            _btnSyncCfg.Click += (s, e) => SyncGameConfig();
+            top.Controls.Add(_btnSyncCfg);
+
+            Button btnBrowse = B("选择游戏目录…", 718, 11, 108, 30, false);
             btnBrowse.Click += (s, e) => BrowseGameDir();
             top.Controls.Add(btnBrowse);
 
@@ -142,8 +149,8 @@ namespace ONITrainer
                 ForeColor = C(SUB),
                 Font = _fontReg,
                 TextAlign = ContentAlignment.MiddleRight,
-                Location = new Point(518, 15),
-                Size = new Size(192, 22)
+                Location = new Point(470, 15),
+                Size = new Size(138, 22)
             };
             top.Controls.Add(_lblGameDir);
 
@@ -308,7 +315,7 @@ namespace ONITrainer
             _txtCoord = new TextBox
             {
                 Location = new Point(92, 61),
-                Size = new Size(300, 26),
+                Size = new Size(248, 26),
                 ReadOnly = false,
                 BackColor = C(INPUT),
                 ForeColor = C(ACC),
@@ -318,19 +325,26 @@ namespace ONITrainer
             _txtCoord.TextChanged += (s, e) => OnCoordTextChanged();
             gRes.Controls.Add(_txtCoord);
 
-            _btnCopyCoord = B("复制坐标", 400, 60, 86, 28, false);
+            _btnCopyCoord = B("复制坐标", 348, 60, 76, 28, false);
             _btnCopyCoord.Enabled = false;
             _btnCopyCoord.Click += (s, e) => CopyCoord(true);
-            _btnCopySeed = B("复制种子", 492, 60, 86, 28, false);
+            _btnCopySeed = B("复制种子", 430, 60, 76, 28, false);
             _btnCopySeed.Enabled = false;
             _btnCopySeed.Click += (s, e) => CopyCoord(false);
-            _btnPreviewMap = B("预览地图", 584, 60, 108, 28, true);
+            _btnPreviewMap = B("预览地图", 512, 60, 84, 28, true);
             _btnPreviewMap.Enabled = false;
             _btnPreviewMap.Click += (s, e) => OpenMapPreview();
-            _lblSeedOnly = Lbl("纯种子：—", 700, 64, 176, SUB);
+            _btnFav = B("★ 收藏", 602, 60, 72, 28, false);
+            _btnFav.Enabled = false;
+            _btnFav.Click += (s, e) => ToggleFavoriteCurrent();
+            _btnHistory = B("历史/收藏", 680, 60, 84, 28, false);
+            _btnHistory.Click += (s, e) => OpenHistoryDialog();
+            _lblSeedOnly = Lbl("纯种子：—", 770, 64, 108, SUB);
             gRes.Controls.Add(_btnCopyCoord);
             gRes.Controls.Add(_btnCopySeed);
             gRes.Controls.Add(_btnPreviewMap);
+            gRes.Controls.Add(_btnFav);
+            gRes.Controls.Add(_btnHistory);
             gRes.Controls.Add(_lblSeedOnly);
 
             _txtPreview = new TextBox
@@ -351,11 +365,11 @@ namespace ONITrainer
             _gPoiFilter = Card("高级功能：按间歇泉 / 火山 / 遗迹二次筛选（需游戏停留在主菜单）", 16, 568, 888, 148);
             _gPoiFilter.Visible = false;
 
-            _gPoiFilter.Controls.Add(Lbl("目标行星", 14, 27, 58, TXT));
+            _gPoiFilter.Controls.Add(Lbl("行星", 12, 27, 34, TXT));
             _cboPoiPlanet = new ComboBox
             {
-                Location = new Point(74, 24),
-                Size = new Size(186, 26),
+                Location = new Point(48, 24),
+                Size = new Size(146, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = C(INPUT),
                 ForeColor = C(TXT),
@@ -364,11 +378,11 @@ namespace ONITrainer
             };
             _gPoiFilter.Controls.Add(_cboPoiPlanet);
 
-            _gPoiFilter.Controls.Add(Lbl("间歇泉/火山/遗迹", 268, 27, 114, TXT));
+            _gPoiFilter.Controls.Add(Lbl("类型", 200, 27, 32, TXT));
             _cboPoiType = new ComboBox
             {
-                Location = new Point(386, 24),
-                Size = new Size(252, 26),
+                Location = new Point(234, 24),
+                Size = new Size(210, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = C(INPUT),
                 ForeColor = C(TXT),
@@ -380,12 +394,25 @@ namespace ONITrainer
             if (_cboPoiType.Items.Count > 0) _cboPoiType.SelectedIndex = 0;
             _gPoiFilter.Controls.Add(_cboPoiType);
 
-            _gPoiFilter.Controls.Add(Lbl("最少", 646, 27, 34, TXT));
+            _cboPoiOp = new ComboBox
+            {
+                Location = new Point(450, 24),
+                Size = new Size(72, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                FlatStyle = FlatStyle.Flat,
+                Font = _fontReg
+            };
+            _cboPoiOp.Items.AddRange(new object[] { "至少 ≥", "至多 ≤" });
+            _cboPoiOp.SelectedIndex = 0;
+            _gPoiFilter.Controls.Add(_cboPoiOp);
+
             _numPoiCount = new NumericUpDown
             {
-                Location = new Point(682, 24),
-                Size = new Size(50, 26),
-                Minimum = 1,
+                Location = new Point(526, 24),
+                Size = new Size(42, 26),
+                Minimum = 0,
                 Maximum = 9,
                 Value = 1,
                 BackColor = C(INPUT),
@@ -394,9 +421,38 @@ namespace ONITrainer
             };
             _gPoiFilter.Controls.Add(_numPoiCount);
 
-            _btnAddPoi = B("添加条件", 740, 23, 72, 26, true);
+            _gPoiFilter.Controls.Add(Lbl("距≤", 574, 27, 26, TXT));
+            _numPoiDist = new NumericUpDown
+            {
+                Location = new Point(602, 24),
+                Size = new Size(52, 26),
+                Minimum = 0,
+                Maximum = 500,
+                Value = 0,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                Font = _fontReg
+            };
+            _gPoiFilter.Controls.Add(_numPoiDist);
+
+            _gPoiFilter.Controls.Add(Lbl("产≥", 658, 27, 26, TXT));
+            _numPoiYield = new NumericUpDown
+            {
+                Location = new Point(686, 24),
+                Size = new Size(64, 26),
+                Minimum = 0,
+                Maximum = 10000,
+                Increment = 100,
+                Value = 0,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                Font = _fontReg
+            };
+            _gPoiFilter.Controls.Add(_numPoiYield);
+
+            _btnAddPoi = B("添加", 756, 23, 60, 26, true);
             _btnAddPoi.Click += (s, e) => AddPoiRule();
-            _btnClearPoi = B("清空", 818, 23, 56, 26, false);
+            _btnClearPoi = B("清空", 820, 23, 54, 26, false);
             _btnClearPoi.Click += (s, e) => ClearPoiRules();
             _gPoiFilter.Controls.Add(_btnAddPoi);
             _gPoiFilter.Controls.Add(_btnClearPoi);
@@ -414,7 +470,7 @@ namespace ONITrainer
             _lstPoiRules.MouseDoubleClick += (s, e) => RemoveSelectedPoiRule();
             _gPoiFilter.Controls.Add(_lstPoiRules);
 
-            _gPoiFilter.Controls.Add(Lbl("提示：添加条件后点「开始后台筛选」，将先毫秒筛特质，再进一步验证真实间歇泉（约 1~2 秒/候选）；双击上方列表项可删除。", 14, 122, 860, SUB));
+            _gPoiFilter.Controls.Add(Lbl("提示：数量支持 ≥/≤，距≤/产≥g/s 填 0 表示不限；添加条件后点「开始后台筛选」，双击上方列表项可删除。", 14, 122, 860, SUB));
 
             body.Controls.Add(gCfg);
             body.Controls.Add(gPlanets);
@@ -1165,13 +1221,14 @@ namespace ONITrainer
                     foreach (KeyValuePair<int, List<PoiFilterRule>> kv in grouped)
                     {
                         if (ctrl.Stop) { allOk = false; break; }
-                        string genErr;
+                        string err;
+                        string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
                         MapPreviewData mapData = st.Bridge.GenerateMapPreview(
-                            cluster.FilePath, candidateSeed, kv.Key, dlcCsv, "", out genErr);
+                            cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, _mixingCode, out err);
                         mapsTested++;
                         if (mapData == null)
                         {
-                            abortErr = genErr ?? "地图生成失败";
+                            abortErr = err ?? "地图生成失败";
                             allOk = false;
                             break;
                         }
@@ -1266,6 +1323,7 @@ namespace ONITrainer
                 _btnCopyCoord.Enabled = true;
                 _btnCopySeed.Enabled = true;
                 _btnPreviewMap.Enabled = true;
+                _btnFav.Enabled = true;
 
                 _suppressEvents = true;
                 _txtCoord.Text = res.Coordinate;
@@ -1279,6 +1337,9 @@ namespace ONITrainer
                 if (cachedMaps != null && cachedMaps.Count > 0)
                     txt += AppendMapSummaryText(cachedMaps);
                 _txtPreview.Text = txt;
+
+                SeedStore.AddHistory(BuildCurrentSeedRecord(cluster, res, cachedMaps));
+                UpdateFavButton();
             });
         }
 
@@ -1371,6 +1432,163 @@ namespace ONITrainer
                 f.ShowDialog(this);
         }
 
+        void SyncGameConfig()
+        {
+            BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+            if (st == null || st.Bridge == null)
+            {
+                _lblSearchStatus.Text = "⚠ 请先启动《缺氧》游戏并停留在主菜单，再点击「读取游戏设置」。";
+                _lblSearchStatus.ForeColor = C(WARN);
+                return;
+            }
+            if (st.InSave)
+            {
+                _lblSearchStatus.Text = "⚠ 当前处于存档中，请在主菜单新开局界面配置故事特质/混搭后读取。";
+                _lblSearchStatus.ForeColor = C(WARN);
+                return;
+            }
+            _btnSyncCfg.Enabled = false;
+            _lblSearchStatus.Text = "正在读取游戏故事特质与 DLC 混搭设置…";
+            _lblSearchStatus.ForeColor = C(WARN);
+
+            Thread t = new Thread(() =>
+            {
+                string err;
+                string resp = st.Bridge.RunMenuCmd("GETGAMECFG", out err);
+                SetUi(() =>
+                {
+                    _btnSyncCfg.Enabled = true;
+                    if (string.IsNullOrEmpty(resp))
+                    {
+                        _lblSearchStatus.Text = "⚠ 读取游戏设置失败：" + (err ?? "无响应");
+                        _lblSearchStatus.ForeColor = C(ERR);
+                        return;
+                    }
+                    string sc = "", mc = "";
+                    string[] ps = resp.Split('|');
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        if (ps[i].StartsWith("storyCode=", StringComparison.Ordinal)) sc = ps[i].Substring("storyCode=".Length);
+                        else if (ps[i].StartsWith("mixingCode=", StringComparison.Ordinal)) mc = ps[i].Substring("mixingCode=".Length);
+                    }
+                    _storyCode = sc;
+                    _mixingCode = mc;
+                    _lblSearchStatus.Text = string.Format("已同步游戏设置：故事={0} · 混搭={1}（预览与高级筛选将自动应用）",
+                        string.IsNullOrEmpty(sc) ? "0" : sc, string.IsNullOrEmpty(mc) ? "0" : mc);
+                    _lblSearchStatus.ForeColor = C(ACC);
+                });
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        SeedRecord BuildCurrentSeedRecord(ClusterDef cluster, SeedSearchResult res, Dictionary<int, MapPreviewData> maps)
+        {
+            List<string> ts = new List<string>();
+            if (res != null && res.PlanetTraits != null)
+            {
+                foreach (KeyValuePair<int, List<WorldTraitDef>> kv in res.PlanetTraits)
+                {
+                    if (kv.Value == null) continue;
+                    for (int i = 0; i < kv.Value.Count; i++)
+                        if (!ts.Contains(kv.Value[i].DisplayName)) ts.Add(kv.Value[i].DisplayName);
+                }
+            }
+            string poiSum = "";
+            if (maps != null && maps.Count > 0)
+            {
+                List<string> ps = new List<string>();
+                foreach (MapPreviewData md in maps.Values)
+                {
+                    int c = 0;
+                    for (int i = 0; i < md.Pois.Count; i++) if (md.Pois[i].Category != "start") c++;
+                    ps.Add(md.WorldName + "(" + c + "POI)");
+                }
+                poiSum = string.Join(", ", ps.ToArray());
+            }
+            return new SeedRecord
+            {
+                Seed = res != null ? res.Seed : 0,
+                Coordinate = res != null ? res.Coordinate : _txtCoord.Text.Trim(),
+                ClusterPath = cluster != null ? cluster.FilePath : "",
+                ClusterName = cluster != null ? cluster.DisplayName : "",
+                StoryCode = _storyCode,
+                MixingCode = _mixingCode,
+                TraitSummary = string.Join("、", ts.ToArray()),
+                PoiSummary = poiSum
+            };
+        }
+
+        void UpdateFavButton()
+        {
+            if (_btnFav == null) return;
+            int seed;
+            if (!TryGetActiveSeed(out seed))
+            {
+                _btnFav.Enabled = false;
+                _btnFav.Text = "★ 收藏";
+                return;
+            }
+            _btnFav.Enabled = _curCluster != null;
+            string coord = string.IsNullOrEmpty(_txtCoord.Text.Trim()) && _curCluster != null
+                ? SeedSearcher.FormatCoordinate(_curCluster.CoordinatePrefix, seed, _txtTemplateCoord.Text)
+                : _txtCoord.Text.Trim();
+            _btnFav.Text = SeedStore.IsFavorite(coord, seed) ? "☆ 已收藏" : "★ 收藏";
+        }
+
+        void ToggleFavoriteCurrent()
+        {
+            int seed;
+            if (!TryGetActiveSeed(out seed) || _curCluster == null) return;
+            string coord = SeedSearcher.FormatCoordinate(_curCluster.CoordinatePrefix, seed,
+                string.IsNullOrEmpty(_txtTemplateCoord.Text) ? _txtCoord.Text : _txtTemplateCoord.Text);
+            SeedRecord rec = BuildCurrentSeedRecord(_curCluster, _lastResult, _previewCacheSeed == seed ? _previewCache : null);
+            rec.Seed = seed;
+            rec.Coordinate = coord;
+            bool fav = SeedStore.ToggleFavorite(rec);
+            UpdateFavButton();
+            _lblSearchStatus.Text = fav ? ("已加入收藏夹：" + coord) : ("已从收藏夹移除：" + coord);
+            _lblSearchStatus.ForeColor = C(ACC);
+        }
+
+        void OpenHistoryDialog()
+        {
+            if (_historyForm != null && !_historyForm.IsDisposed)
+            {
+                _historyForm.Activate();
+                return;
+            }
+            _historyForm = new SeedHistoryForm(ApplySavedSeedRecord);
+            _historyForm.Show(this);
+        }
+
+        void ApplySavedSeedRecord(SeedRecord rec, bool openPreview)
+        {
+            if (rec == null) return;
+            if (!string.IsNullOrEmpty(rec.ClusterPath) && _cboCluster != null)
+            {
+                for (int i = 0; i < _cboCluster.Items.Count; i++)
+                {
+                    ClusterDef cd = _cboCluster.Items[i] as ClusterDef;
+                    if (cd != null && string.Equals(cd.FilePath, rec.ClusterPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _cboCluster.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (!string.IsNullOrEmpty(rec.StoryCode)) _storyCode = rec.StoryCode;
+            if (!string.IsNullOrEmpty(rec.MixingCode)) _mixingCode = rec.MixingCode;
+            _suppressEvents = true;
+            _txtCoord.Text = rec.Coordinate;
+            _suppressEvents = false;
+            OnCoordTextChanged();
+            _txtPreview.Text = string.IsNullOrEmpty(rec.TraitSummary) ? rec.Coordinate : (rec.TraitSummary + "\r\n" + rec.PoiSummary);
+            _lblSearchStatus.Text = "已载入记录：" + rec.Coordinate;
+            _lblSearchStatus.ForeColor = C(ACC);
+            if (openPreview) OpenMapPreview();
+        }
+
         void OnGlobalAdvancedModeChanged()
         {
             SetUi(ApplyAdvancedModeLayout);
@@ -1425,13 +1643,21 @@ namespace ONITrainer
             if (pc == null || entry == null) return;
 
             int pidx = pc.Placement.PlacementIndex;
-            int minCnt = (int)_numPoiCount.Value;
+            int cnt = (int)_numPoiCount.Value;
+            bool atMost = (_cboPoiOp != null && _cboPoiOp.SelectedIndex == 1);
+            int maxDist = _numPoiDist != null ? (int)_numPoiDist.Value : 0;
+            float minYield = _numPoiYield != null ? (float)_numPoiYield.Value : 0f;
+
             for (int i = 0; i < _poiRules.Count; i++)
             {
+                PoiFilterRule r = _poiRules[i].Rule;
                 if (_poiRules[i].PlacementIndex == pidx &&
-                    string.Equals(_poiRules[i].Rule.PrefabId, entry.PrefabId, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(r.PrefabId, entry.PrefabId, StringComparison.OrdinalIgnoreCase) &&
+                    r.CompareAtMost == atMost &&
+                    r.MaxDist == maxDist &&
+                    Math.Abs(r.MinYieldGps - minYield) < 0.01f)
                 {
-                    _poiRules[i].Rule.MinCount = minCnt;
+                    r.MinCount = cnt;
                     RefreshPoiRulesList();
                     return;
                 }
@@ -1446,7 +1672,10 @@ namespace ONITrainer
                     PrefabId = entry.PrefabId,
                     Category = entry.Category,
                     DisplayName = entry.DisplayName,
-                    MinCount = minCnt
+                    MinCount = cnt,
+                    CompareAtMost = atMost,
+                    MaxDist = maxDist,
+                    MinYieldGps = minYield
                 }
             });
             RefreshPoiRulesList();
@@ -1485,6 +1714,7 @@ namespace ONITrainer
             _btnCopyCoord.Enabled = valid && _curCluster != null;
             _btnCopySeed.Enabled = valid && _curCluster != null;
             _lblSeedOnly.Text = valid ? ("纯种子：" + seed.ToString(CultureInfo.InvariantCulture)) : "纯种子：—";
+            UpdateFavButton();
         }
 
         bool TryGetActiveSeed(out int seed)
@@ -1546,11 +1776,14 @@ namespace ONITrainer
             WorldPlacementDef curWp = CurrentPlacement();
             if (curWp != null) initWorldIdx = curWp.PlacementIndex;
 
+            string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
             _mapPreviewForm = new MapPreviewForm(
                 _curCluster,
                 seed,
                 fullCoord,
                 GetActiveDlcCsv(),
+                sArg,
+                _mixingCode,
                 _getBridge,
                 cache,
                 initWorldIdx);
@@ -1562,6 +1795,8 @@ namespace ONITrainer
             _closing = true;
             if (_advChangedHandler != null)
                 TrainerSettings.AdvancedModeChanged -= _advChangedHandler;
+            if (_historyForm != null && !_historyForm.IsDisposed)
+                try { _historyForm.Close(); } catch { }
             if (_mapPreviewForm != null && !_mapPreviewForm.IsDisposed)
                 try { _mapPreviewForm.Close(); } catch { }
             StopSearch();

@@ -21,19 +21,22 @@ namespace ONITrainer
         readonly int _seed;
         readonly string _coordinate;
         readonly string _activeDlcCsv;
+        readonly string _storyArg;
+        readonly string _mixingCode;
         readonly Func<BridgePreviewState> _getBridge;
         readonly List<WorldPlacementDef> _orderedPlacements;
         readonly Dictionary<int, MapPreviewData> _cache = new Dictionary<int, MapPreviewData>();
 
-        Panel _topBar, _advBar, _rightPanel, _statusBar, _overlayPanel;
-        Label _lblCoord, _lblMeta, _lblPoiHeader, _lblPoiSummary, _lblHover, _lblOverlay;
+        Panel _topBar, _advBar, _rightPanel, _statusBar, _overlayPanel, _pnlDetail;
+        Label _lblCoord, _lblMeta, _lblPoiHeader, _lblPoiSummary, _lblPoiDetail, _lblHover, _lblOverlay;
         ComboBox _cboPlanet, _cboRenderMode;
         CheckBox[] _catChecks;
         readonly string[] _catKeys = { "metal_volcano", "volcano", "water_geyser", "gas_geyser", "oil", "story", "poi" };
         readonly string[] _catNames = { "金属火山", "火山", "水源/液泉", "气体喷口", "油井", "故事特质", "遗迹/传送" };
-        Button _btnRetry, _btnExportPng;
+        Button _btnRetry, _btnExportPng, _btnOverview;
         ListBox _lstPois;
         MapCanvas _canvas;
+        ClusterOverviewForm _overviewForm;
 
         MapPreviewData _curData;
         Bitmap _curBitmap;
@@ -52,11 +55,27 @@ namespace ONITrainer
             Func<BridgePreviewState> getBridge,
             Dictionary<int, MapPreviewData> initialCache,
             int initialWorldIndex)
+            : this(cluster, seed, coordinate, activeDlcCsv, "", "", getBridge, initialCache, initialWorldIndex)
+        {
+        }
+
+        public MapPreviewForm(
+            ClusterDef cluster,
+            int seed,
+            string coordinate,
+            string activeDlcCsv,
+            string storyArg,
+            string mixingCode,
+            Func<BridgePreviewState> getBridge,
+            Dictionary<int, MapPreviewData> initialCache,
+            int initialWorldIndex)
         {
             _cluster = cluster;
             _seed = seed;
             _coordinate = coordinate ?? "";
             _activeDlcCsv = activeDlcCsv ?? "";
+            _storyArg = storyArg ?? "";
+            _mixingCode = mixingCode ?? "";
             _getBridge = getBridge;
             _orderedPlacements = cluster != null ? cluster.GetOrderedPlacements() : new List<WorldPlacementDef>();
             _targetWorldIndex = initialWorldIndex;
@@ -80,7 +99,7 @@ namespace ONITrainer
             DpiHelper.ScaleLayout(this);
             float scale = DpiHelper.GetDpiScale();
             if (scale > 1.01f)
-                _lstPois.ItemHeight = (int)Math.Round(40 * scale);
+                _lstPois.ItemHeight = (int)Math.Round(44 * scale);
 
             _advChangedHandler = OnGlobalAdvancedModeChanged;
             TrainerSettings.AdvancedModeChanged += _advChangedHandler;
@@ -101,8 +120,8 @@ namespace ONITrainer
                 Text = _coordinate,
                 ForeColor = C(ACC),
                 Font = new Font("Consolas", 9.5F, FontStyle.Bold),
-                Location = new Point(14, 13),
-                Size = new Size(256, 22),
+                Location = new Point(12, 13),
+                Size = new Size(196, 22),
                 AutoEllipsis = true
             };
             _topBar.Controls.Add(_lblCoord);
@@ -111,14 +130,14 @@ namespace ONITrainer
             {
                 Text = "小行星",
                 ForeColor = C(TXT),
-                Location = new Point(276, 14),
-                Size = new Size(46, 20)
+                Location = new Point(212, 14),
+                Size = new Size(44, 20)
             });
 
             _cboPlanet = new ComboBox
             {
-                Location = new Point(324, 11),
-                Size = new Size(220, 26),
+                Location = new Point(258, 11),
+                Size = new Size(172, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = C(INPUT),
                 ForeColor = C(TXT),
@@ -128,27 +147,31 @@ namespace ONITrainer
             _cboPlanet.SelectedIndexChanged += (s, e) => OnPlanetChanged();
             _topBar.Controls.Add(_cboPlanet);
 
-            Button btnZoomIn = B("+", 554, 10, 32, 27, false);
+            Button btnZoomIn = B("+", 436, 10, 28, 27, false);
             btnZoomIn.Click += (s, e) => _canvas.StepZoom(1.3f);
-            Button btnZoomOut = B("-", 590, 10, 32, 27, false);
+            Button btnZoomOut = B("-", 468, 10, 28, 27, false);
             btnZoomOut.Click += (s, e) => _canvas.StepZoom(1f / 1.3f);
-            Button btnFit = B("适应窗口", 626, 10, 74, 27, false);
+            Button btnFit = B("适应窗口", 500, 10, 68, 27, false);
             btnFit.Click += (s, e) => _canvas.ResetFit();
-            Button btnReload = B("重新生成", 706, 10, 76, 27, false);
+            Button btnReload = B("重新生成", 572, 10, 70, 27, false);
             btnReload.Click += (s, e) => ReloadCurrentPlanet(true);
+            _btnOverview = B("整星群总览", 646, 10, 92, 27, true);
+            _btnOverview.Click += (s, e) => OpenClusterOverview();
 
             _topBar.Controls.Add(btnZoomIn);
             _topBar.Controls.Add(btnZoomOut);
             _topBar.Controls.Add(btnFit);
             _topBar.Controls.Add(btnReload);
+            _topBar.Controls.Add(_btnOverview);
 
             _lblMeta = new Label
             {
                 Text = "准备加载…",
                 ForeColor = C(SUB),
                 TextAlign = ContentAlignment.MiddleRight,
-                Location = new Point(788, 13),
-                Size = new Size(278, 22),
+                Location = new Point(744, 13),
+                Size = new Size(322, 22),
+                AutoEllipsis = true,
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
             _topBar.Controls.Add(_lblMeta);
@@ -221,7 +244,7 @@ namespace ONITrainer
             _statusBar.Controls.Add(_lblHover);
 
 
-            _rightPanel = new Panel { Dock = DockStyle.Right, Width = 316, BackColor = C(0x1B1D24) };
+            _rightPanel = new Panel { Dock = DockStyle.Right, Width = 336, BackColor = C(0x1B1D24) };
 
             Panel poiHdr = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = C(CARD) };
             _lblPoiHeader = new Label
@@ -230,7 +253,7 @@ namespace ONITrainer
                 ForeColor = C(ACC),
                 Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
                 Location = new Point(12, 6),
-                Size = new Size(292, 22)
+                Size = new Size(312, 22)
             };
             _lblPoiSummary = new Label
             {
@@ -238,11 +261,21 @@ namespace ONITrainer
                 ForeColor = C(SUB),
                 Font = new Font("Microsoft YaHei UI", 8.5F),
                 Location = new Point(12, 28),
-                Size = new Size(292, 20),
+                Size = new Size(312, 20),
                 AutoEllipsis = true
             };
             poiHdr.Controls.Add(_lblPoiHeader);
             poiHdr.Controls.Add(_lblPoiSummary);
+
+            _pnlDetail = new Panel { Dock = DockStyle.Bottom, Height = 66, BackColor = C(CARD), Padding = new Padding(10, 6, 10, 6) };
+            _lblPoiDetail = new Label
+            {
+                Text = "点击任意间歇泉/火山/遗迹查看详细产出与周期…",
+                ForeColor = C(TXT),
+                Font = new Font("Microsoft YaHei UI", 8.5F),
+                Dock = DockStyle.Fill
+            };
+            _pnlDetail.Controls.Add(_lblPoiDetail);
 
             _lstPois = new ListBox
             {
@@ -252,17 +285,19 @@ namespace ONITrainer
                 BorderStyle = BorderStyle.None,
                 IntegralHeight = false,
                 DrawMode = DrawMode.OwnerDrawFixed,
-                ItemHeight = 40
+                ItemHeight = 44
             };
             _lstPois.DrawItem += DrawPoiItem;
             _lstPois.SelectedIndexChanged += (s, e) =>
             {
-                if (_suppressEvents) return;
                 MapPoiItem poi = _lstPois.SelectedItem as MapPoiItem;
+                UpdateSelectedPoiDetail(poi);
+                if (_suppressEvents) return;
                 _canvas.FocusPoi(poi);
             };
 
             _rightPanel.Controls.Add(_lstPois);
+            _rightPanel.Controls.Add(_pnlDetail);
             _rightPanel.Controls.Add(poiHdr);
 
 
@@ -406,7 +441,8 @@ namespace ONITrainer
             if (!forceRegenerate)
             {
                 MapPreviewData cached;
-                if (_cache.TryGetValue(worldIndex, out cached) && cached != null)
+                lock (_cache) { _cache.TryGetValue(worldIndex, out cached); }
+                if (cached != null)
                 {
                     ShowPreviewData(cached);
                     return;
@@ -446,7 +482,7 @@ namespace ONITrainer
 
                 string err;
                 MapPreviewData data = state.Bridge.GenerateMapPreview(
-                    _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, "", out err);
+                    _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
 
                 SetUi(() =>
                 {
@@ -458,12 +494,47 @@ namespace ONITrainer
                         _lblMeta.ForeColor = C(ERR);
                         return;
                     }
-                    _cache[worldIndex] = data;
+                    lock (_cache) { _cache[worldIndex] = data; }
                     ShowPreviewData(data);
                 });
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        void OpenClusterOverview()
+        {
+            if (_overviewForm != null && !_overviewForm.IsDisposed)
+            {
+                _overviewForm.Activate();
+                return;
+            }
+            _overviewForm = new ClusterOverviewForm(
+                _cluster, _seed, _coordinate, _activeDlcCsv, _storyArg, _mixingCode,
+                _getBridge, _cache, SelectPlanetIndex);
+            _overviewForm.Show(this);
+        }
+
+        public void SelectPlanetIndex(int worldIndex)
+        {
+            for (int i = 0; i < _cboPlanet.Items.Count; i++)
+            {
+                PlanetChoice pc = _cboPlanet.Items[i] as PlanetChoice;
+                if (pc != null && pc.Placement.PlacementIndex == worldIndex)
+                {
+                    _cboPlanet.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+
+        void UpdateSelectedPoiDetail(MapPoiItem poi)
+        {
+            if (_lblPoiDetail == null) return;
+            if (poi == null)
+                _lblPoiDetail.Text = "点击任意间歇泉/火山/遗迹查看详细产出与周期…";
+            else
+                _lblPoiDetail.Text = poi.FormatDetailText();
         }
 
         void SetUi(Action act)
@@ -504,6 +575,7 @@ namespace ONITrainer
             _lblMeta.ForeColor = C(ACC);
             RebuildMapBitmap();
             RefreshFilteredPois();
+            UpdateSelectedPoiDetail(null);
         }
 
         void RebuildMapBitmap()
@@ -580,6 +652,14 @@ namespace ONITrainer
             return Color.FromArgb(0x78, 0xD8, 0xC4);
         }
 
+        static Color GradeColor(byte grade)
+        {
+            if (grade == 1) return Color.FromArgb(0xF5, 0xB9, 0x42);
+            if (grade == 2) return Color.FromArgb(0x00, 0xD6, 0x8F);
+            if (grade == 3) return Color.FromArgb(0x4A, 0xAE, 0xFF);
+            return Color.FromArgb(0x8C, 0x92, 0xA2);
+        }
+
         void DrawPoiItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0 || e.Index >= _lstPois.Items.Count) return;
@@ -590,8 +670,9 @@ namespace ONITrainer
                 e.Graphics.FillRectangle(brBg, e.Bounds);
 
             Color dotCol = CategoryColor(item.Category);
+            float scale = DpiHelper.GetDpiScale();
             int pad = 8;
-            int dotSz = Math.Max(8, (int)Math.Round(10 * DpiHelper.GetDpiScale()));
+            int dotSz = Math.Max(8, (int)Math.Round(10 * scale));
             int dotY = e.Bounds.Top + (e.Bounds.Height / 4) - (dotSz / 2) + 2;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (SolidBrush brDot = new SolidBrush(dotCol))
@@ -599,22 +680,52 @@ namespace ONITrainer
 
             int textX = e.Bounds.Left + pad + dotSz + 8;
             int halfH = e.Bounds.Height / 2;
+            int badgeW = 0;
+            string grade = item.GradeText();
+            if (!string.IsNullOrEmpty(grade))
+            {
+                badgeW = (int)Math.Round(42 * scale);
+                Rectangle badgeRect = new Rectangle(e.Bounds.Right - badgeW - 6, e.Bounds.Top + 4, badgeW, halfH - 5);
+                Color gcol = GradeColor(item.Grade);
+                using (SolidBrush brBadge = new SolidBrush(Color.FromArgb(44, gcol)))
+                using (Pen penBadge = new Pen(gcol))
+                {
+                    e.Graphics.FillRectangle(brBadge, badgeRect);
+                    e.Graphics.DrawRectangle(penBadge, badgeRect);
+                }
+                TextRenderer.DrawText(e.Graphics, grade + "级", _fontBold, badgeRect,
+                    gcol, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+                badgeW += 10;
+            }
+
             string title = item.DisplayName + (item.IsRandomGeyser ? " [随机]" : "");
             TextRenderer.DrawText(e.Graphics, title, _fontBold,
-                new Rectangle(textX, e.Bounds.Top + 2, e.Bounds.Width - textX - 4, halfH),
+                new Rectangle(textX, e.Bounds.Top + 2, e.Bounds.Width - (textX - e.Bounds.Left) - 4 - badgeW, halfH),
                 dotCol, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
 
-            string sub = item.Category == "start"
-                ? string.Format("({0}, {1})  ·  初始出生点", item.X, item.Y)
-                : string.Format("({0}, {1})  ·  距打印舱 {2} 格", item.X, item.Y, item.DistFromStart);
+            string sub;
+            if (item.HasGeyserStats)
+            {
+                sub = string.Format(CultureInfo.InvariantCulture, "均产 {0} · {1:0.#}℃ · 距 {2} 格",
+                    item.FormatYieldShort(), item.OutputTempC, item.DistFromStart);
+            }
+            else if (item.Category == "start")
+            {
+                sub = string.Format("({0}, {1})  ·  初始出生点", item.X, item.Y);
+            }
+            else
+            {
+                sub = string.Format("({0}, {1})  ·  距打印舱 {2} 格", item.X, item.Y, item.DistFromStart);
+            }
             TextRenderer.DrawText(e.Graphics, sub, _fontReg,
-                new Rectangle(textX, e.Bounds.Top + halfH - 1, e.Bounds.Width - textX - 4, halfH),
+                new Rectangle(textX, e.Bounds.Top + halfH - 1, e.Bounds.Width - (textX - e.Bounds.Left) - 4, halfH),
                 C(SUB), TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
         }
 
         void OnCanvasPoiClicked(MapPoiItem poi)
         {
             if (poi == null) return;
+            UpdateSelectedPoiDetail(poi);
             _suppressEvents = true;
             for (int i = 0; i < _lstPois.Items.Count; i++)
             {
@@ -646,7 +757,10 @@ namespace ONITrainer
                 x, y, zoneName, elemName, tempC);
             if (nearPoi != null)
             {
-                info += string.Format("   |   ★ {0}（距打印舱 {1} 格）", nearPoi.DisplayName, nearPoi.DistFromStart);
+                string extra = nearPoi.HasGeyserStats
+                    ? string.Format(CultureInfo.InvariantCulture, " [{0} {1}]", nearPoi.GradeText(), nearPoi.FormatYieldShort())
+                    : "";
+                info += string.Format("   |   ★ {0}{1}（距 {2} 格）", nearPoi.DisplayName, extra, nearPoi.DistFromStart);
                 _lblHover.ForeColor = C(ACC);
             }
             else
@@ -690,6 +804,8 @@ namespace ONITrainer
         {
             _closing = true;
             Interlocked.Increment(ref _loadGenSeq);
+            if (_overviewForm != null && !_overviewForm.IsDisposed)
+                try { _overviewForm.Close(); } catch { }
             if (_advChangedHandler != null)
                 TrainerSettings.AdvancedModeChanged -= _advChangedHandler;
             if (_curBitmap != null)
