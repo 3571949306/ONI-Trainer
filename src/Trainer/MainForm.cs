@@ -39,27 +39,52 @@ namespace ONITrainer
             if (Math.Abs(s - 1f) < 0.01f) return;
 
             f.AutoScaleMode = AutoScaleMode.None;
-            int ncW = Math.Max(0, f.Width - f.ClientSize.Width);
-            int ncH = Math.Max(0, f.Height - f.ClientSize.Height);
-            int targetW = (int)Math.Round(f.ClientSize.Width * s) + ncW;
-            int targetH = (int)Math.Round(f.ClientSize.Height * s) + ncH;
+            int origClientW = f.ClientSize.Width;
+            int origClientH = f.ClientSize.Height;
+            bool hadMin = (f.MinimumSize.Width > 0 || f.MinimumSize.Height > 0);
+            if (hadMin) f.MinimumSize = Size.Empty;
+
             ScaleBounds(f, s);
-            Size sz = new Size(targetW, targetH);
+
             Screen scr = Screen.FromControl(f);
-            int maxW = Math.Max(480, scr.WorkingArea.Width - 32);
-            int maxH = Math.Max(320, scr.WorkingArea.Height - 36);
-            if (sz.Width > maxW) sz = new Size(maxW, sz.Height);
-            if (sz.Height > maxH) sz = new Size(sz.Width, maxH);
-            f.Size = sz;
-            f.MinimumSize = sz;
+            int maxClientW = Math.Max(480, scr.WorkingArea.Width - 40);
+            int maxClientH = Math.Max(320, scr.WorkingArea.Height - 56);
+            int targetClientW = Math.Min(maxClientW, (int)Math.Round(origClientW * s));
+            int targetClientH = Math.Min(maxClientH, (int)Math.Round(origClientH * s));
+
+            f.ClientSize = new Size(targetClientW, targetClientH);
+            if (hadMin)
+            {
+                if (f.FormBorderStyle == FormBorderStyle.FixedDialog || f.FormBorderStyle == FormBorderStyle.FixedSingle)
+                {
+                    f.MinimumSize = f.Size;
+                }
+                else
+                {
+                    int ncW = Math.Max(0, f.Width - f.ClientSize.Width);
+                    int ncH = Math.Max(0, f.Height - f.ClientSize.Height);
+                    f.MinimumSize = new Size(targetClientW + ncW, targetClientH + ncH);
+                }
+            }
         }
 
         static void ScaleBounds(Control c, float s)
         {
             foreach (Control ch in c.Controls)
             {
-                ch.Location = new Point((int)Math.Round(ch.Left * s), (int)Math.Round(ch.Top * s));
-                ch.Size = new Size((int)Math.Round(ch.Width * s), (int)Math.Round(ch.Height * s));
+                if (ch.Dock == DockStyle.Top || ch.Dock == DockStyle.Bottom)
+                {
+                    ch.Height = (int)Math.Round(ch.Height * s);
+                }
+                else if (ch.Dock == DockStyle.Left || ch.Dock == DockStyle.Right)
+                {
+                    ch.Width = (int)Math.Round(ch.Width * s);
+                }
+                else if (ch.Dock == DockStyle.None)
+                {
+                    ch.Location = new Point((int)Math.Round(ch.Left * s), (int)Math.Round(ch.Top * s));
+                    ch.Size = new Size((int)Math.Round(ch.Width * s), (int)Math.Round(ch.Height * s));
+                }
                 ScaleBounds(ch, s);
             }
         }
@@ -325,7 +350,7 @@ namespace ONITrainer
             g6.Controls.Add(bExpOn); g6.Controls.Add(bExpOff); g6.Controls.Add(_lblMoraleExpState);
 
 
-            _gAdvanced = Card("07  高级功能（建造挖掘提速 / 生存锁 / 格子微调 / 复制人编辑）", 16, 484, 808, 126);
+            _gAdvanced = Card("07  高级功能（极速建造挖掘 / 生存锁 / 格子微调 / 复制人与间歇泉编辑）", 16, 484, 808, 126);
             _gAdvanced.Visible = false;
 
             _gAdvanced.Controls.Add(Lbl("建造挖掘提速", 16, 26, 98, TXT));
@@ -360,18 +385,21 @@ namespace ONITrainer
                 _gAdvanced.Controls.Add(cb);
                 sx += survWidths[i] + 4;
             }
-            Button bSurvNow = B("立即补满全员", 602, 57, 190, 26, false);
+            Button bSurvNow = B("立即补满全员", 584, 57, 208, 26, false);
             bSurvNow.Click += (s, e) => SurvivalNow();
             _gAdvanced.Controls.Add(bSurvNow);
 
-            _gAdvanced.Controls.Add(Lbl("鼠标格工具", 16, 95, 84, TXT));
-            Button bHeat = B("升温 +20℃", 104, 91, 96, 26, false); bHeat.Click += (s, e) => RunCellTool("CELLTEMP 20", "鼠标格升温 +20℃");
-            Button bCool = B("降温 -20℃", 206, 91, 96, 26, false); bCool.Click += (s, e) => RunCellTool("CELLTEMP -20", "鼠标格降温 -20℃");
+            _gAdvanced.Controls.Add(Lbl("选中/悬停格", 16, 95, 84, TXT));
+            Button bHeat = B("升温 +20℃", 104, 91, 96, 26, false); bHeat.Click += (s, e) => RunCellTool("CELLTEMP 20", "目标格升温 +20℃");
+            Button bCool = B("降温 -20℃", 206, 91, 96, 26, false); bCool.Click += (s, e) => RunCellTool("CELLTEMP -20", "目标格降温 -20℃");
             Button bVac = B("单格抽真空", 308, 91, 96, 26, false); bVac.Click += (s, e) => RunCellTool("CELLVAC 0", "单格抽真空");
+            Button bGeyserEdit = B("间歇泉 / 火山编辑器…", 584, 90, 208, 28, true);
+            bGeyserEdit.Click += (s, e) => OpenGeyserEditor();
             _gAdvanced.Controls.Add(bHeat);
             _gAdvanced.Controls.Add(bCool);
             _gAdvanced.Controls.Add(bVac);
-            _gAdvanced.Controls.Add(Lbl("仅作用气/液格；不启沙盒、不锁成就", 416, 95, 376, SUB));
+            _gAdvanced.Controls.Add(Lbl("点选或悬停气/液格生效", 412, 95, 166, SUB));
+            _gAdvanced.Controls.Add(bGeyserEdit);
 
 
             _lblLogHdr = new Label
@@ -1685,8 +1713,18 @@ namespace ONITrainer
                 }
                 else if (err != null && err.Contains("solid"))
                 {
-                    ShowPopup("目标格是固体砖块，为保证安全已跳过（仅对气体与液体生效）。");
-                    Log("[取消] " + title + "：跳过固体格");
+                    ShowPopup("当前目标格是固体砖块，为保证安全已跳过。\n请先在游戏内点击选中（或悬停）一格气体或液体后再操作。");
+                    Log("[取消] " + title + "：目标为固体格，已安全跳过");
+                }
+                else if (err != null && err.Contains("vacuum"))
+                {
+                    ShowPopup("当前目标格是真空，无法升降温。\n请先在游戏内点击选中（或悬停）一格气体或液体后再操作。");
+                    Log("[取消] " + title + "：目标格为真空");
+                }
+                else if (err != null && err.Contains("bad-cell"))
+                {
+                    ShowPopup("尚未定位到有效地图格。\n请先在游戏画面内点击选中一格气体或液体后再点击按钮。");
+                    Log("[取消] " + title + "：未选中有效地图格");
                 }
                 else
                     Log("[失败] " + title + "：" + ErrReason(err));
@@ -1704,6 +1742,20 @@ namespace ONITrainer
             }
             EnsureAutoBackupOnce();
             using (DupeEditorForm f = new DupeEditorForm(_bridge, Log))
+                f.ShowDialog(this);
+        }
+
+        void OpenGeyserEditor()
+        {
+            if (!EnsureReady()) return;
+            string err;
+            if (!_bridge.EnsureHelperLoaded(out err))
+            {
+                Log("[失败] 加载组件：" + (err ?? "未知"));
+                return;
+            }
+            EnsureAutoBackupOnce();
+            using (GeyserEditorForm f = new GeyserEditorForm(_bridge, Log))
                 f.ShowDialog(this);
         }
 
@@ -1725,6 +1777,7 @@ namespace ONITrainer
             Bridge br = _bridge;
             int pid = _pid;
             IntPtr ts = _timeScale;
+            HeadlessPreviewHost.Shutdown();
 
             if ((needSpeed || needStress || needMorale || needMoraleExp || needHelperCleanup) && Bridge.IsProcessAlive(pid))
             {

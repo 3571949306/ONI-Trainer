@@ -22,6 +22,12 @@ namespace ONITrainer
         static bool _autoBackupSave = true;
         static bool _autoCheckUpdate;
         static string _lastSeedCoord = "";
+        static int _parallelWorkers = -1;
+        static string _seedDbRepo = "3571949306/ONI-Seed-DB";
+        static string _seedDbBranch = "main";
+        static string _seedDbMirror = "";
+        static bool _seedDbAutoPull = true;
+        static string _seedDbGitHubToken = "";
 
         public static bool AdvancedMode { get { EnsureLoaded(); return _advancedMode; } }
         public static bool EnableHotkeys { get { EnsureLoaded(); return _enableHotkeys; } }
@@ -35,6 +41,23 @@ namespace ONITrainer
         public static bool AutoBackupSave { get { EnsureLoaded(); return _autoBackupSave; } }
         public static bool AutoCheckUpdate { get { EnsureLoaded(); return _autoCheckUpdate; } }
         public static string LastSeedCoord { get { EnsureLoaded(); return _lastSeedCoord; } }
+        public static int ParallelWorkers { get { EnsureLoaded(); return _parallelWorkers; } }
+        public static string SeedDbRepo { get { EnsureLoaded(); return _seedDbRepo; } }
+        public static string SeedDbBranch { get { EnsureLoaded(); return _seedDbBranch; } }
+        public static string SeedDbMirror { get { EnsureLoaded(); return _seedDbMirror; } }
+        public static bool SeedDbAutoPull { get { EnsureLoaded(); return _seedDbAutoPull; } }
+        public static string SeedDbGitHubToken { get { EnsureLoaded(); return _seedDbGitHubToken; } }
+
+        public static int EffectiveWorkerCount
+        {
+            get
+            {
+                int w = ParallelWorkers;
+                if (w == 0) return 0;
+                if (w > 0) return Math.Max(1, Math.Min(12, w));
+                return Math.Max(2, Math.Min(6, Environment.ProcessorCount / 2));
+            }
+        }
 
         public static event Action AdvancedModeChanged;
         public static event Action SettingsChanged;
@@ -107,6 +130,18 @@ namespace ONITrainer
                             _autoCheckUpdate = ParseBool(v, false);
                         else if (string.Equals(k, "LastSeedCoord", StringComparison.OrdinalIgnoreCase))
                             _lastSeedCoord = v ?? "";
+                        else if (string.Equals(k, "ParallelWorkers", StringComparison.OrdinalIgnoreCase) && int.TryParse(v, out iv))
+                            _parallelWorkers = Math.Max(-1, Math.Min(12, iv));
+                        else if (string.Equals(k, "SeedDbRepo", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(v))
+                            _seedDbRepo = v.Trim();
+                        else if (string.Equals(k, "SeedDbBranch", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(v))
+                            _seedDbBranch = v.Trim();
+                        else if (string.Equals(k, "SeedDbMirror", StringComparison.OrdinalIgnoreCase))
+                            _seedDbMirror = (v ?? "").Trim();
+                        else if (string.Equals(k, "SeedDbAutoPull", StringComparison.OrdinalIgnoreCase))
+                            _seedDbAutoPull = ParseBool(v, true);
+                        else if (string.Equals(k, "SeedDbGitHubToken", StringComparison.OrdinalIgnoreCase))
+                            _seedDbGitHubToken = (v ?? "").Trim();
                     }
                 }
                 catch { }
@@ -127,6 +162,12 @@ namespace ONITrainer
             _autoBackupSave = true;
             _autoCheckUpdate = false;
             _lastSeedCoord = "";
+            _parallelWorkers = -1;
+            _seedDbRepo = "3571949306/ONI-Seed-DB";
+            _seedDbBranch = "main";
+            _seedDbMirror = "";
+            _seedDbAutoPull = true;
+            _seedDbGitHubToken = "";
         }
 
         static bool ParseBool(string v, bool defVal)
@@ -162,6 +203,51 @@ namespace ONITrainer
                 if (changed)
                 {
                     _lastSeedCoord = clean;
+                    SaveInternal();
+                }
+            }
+            if (changed) RaiseEvent(SettingsChanged);
+        }
+
+        public static void SetParallelWorkers(int workers)
+        {
+            int clamped = Math.Max(-1, Math.Min(12, workers));
+            bool changed;
+            lock (_lock)
+            {
+                EnsureLoaded();
+                changed = (_parallelWorkers != clamped);
+                if (changed)
+                {
+                    _parallelWorkers = clamped;
+                    SaveInternal();
+                }
+            }
+            if (changed) RaiseEvent(SettingsChanged);
+        }
+
+        public static void SetSeedDbConfig(string repo, string branch, string mirror, bool autoPull, string token)
+        {
+            string cRepo = string.IsNullOrEmpty(repo) ? "3571949306/ONI-Seed-DB" : repo.Trim();
+            string cBranch = string.IsNullOrEmpty(branch) ? "main" : branch.Trim();
+            string cMirror = (mirror ?? "").Trim();
+            string cToken = (token ?? "").Trim();
+            bool changed;
+            lock (_lock)
+            {
+                EnsureLoaded();
+                changed = !string.Equals(_seedDbRepo, cRepo, StringComparison.Ordinal) ||
+                          !string.Equals(_seedDbBranch, cBranch, StringComparison.Ordinal) ||
+                          !string.Equals(_seedDbMirror, cMirror, StringComparison.Ordinal) ||
+                          _seedDbAutoPull != autoPull ||
+                          !string.Equals(_seedDbGitHubToken, cToken, StringComparison.Ordinal);
+                if (changed)
+                {
+                    _seedDbRepo = cRepo;
+                    _seedDbBranch = cBranch;
+                    _seedDbMirror = cMirror;
+                    _seedDbAutoPull = autoPull;
+                    _seedDbGitHubToken = cToken;
                     SaveInternal();
                 }
             }
@@ -251,6 +337,12 @@ namespace ONITrainer
                 sb.AppendLine("AutoBackupSave=" + (_autoBackupSave ? "1" : "0"));
                 sb.AppendLine("AutoCheckUpdate=" + (_autoCheckUpdate ? "1" : "0"));
                 sb.AppendLine("LastSeedCoord=" + (_lastSeedCoord ?? ""));
+                sb.AppendLine("ParallelWorkers=" + _parallelWorkers);
+                sb.AppendLine("SeedDbRepo=" + (_seedDbRepo ?? "3571949306/ONI-Seed-DB"));
+                sb.AppendLine("SeedDbBranch=" + (_seedDbBranch ?? "main"));
+                sb.AppendLine("SeedDbMirror=" + (_seedDbMirror ?? ""));
+                sb.AppendLine("SeedDbAutoPull=" + (_seedDbAutoPull ? "1" : "0"));
+                sb.AppendLine("SeedDbGitHubToken=" + (_seedDbGitHubToken ?? ""));
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
             catch { }

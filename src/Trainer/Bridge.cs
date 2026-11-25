@@ -307,6 +307,126 @@ namespace ONITrainer
             return false;
         }
 
+        public sealed class BatchPoiScreenResult
+        {
+            public int MatchedSeed;
+            public int CheckedCount;
+            public int SkippedBadSeeds;
+            public bool FallbackNeeded;
+        }
+
+        public BatchPoiScreenResult ScreenPoiBatch(
+            string clusterFilePath,
+            int worldIndex,
+            string activeDlcCsv,
+            string storyTraitCsv,
+            string mixingCsv,
+            List<PoiFilterRule> rules,
+            int[] seeds,
+            int seedCount,
+            out string err,
+            Action<string> onBatchRecordFile = null)
+        {
+            err = null;
+            BatchPoiScreenResult res = new BatchPoiScreenResult();
+            if (!EnsureHelperLoaded(out err)) return res;
+            if (rules == null || rules.Count == 0 || seeds == null || seedCount <= 0)
+            {
+                res.FallbackNeeded = true;
+                return res;
+            }
+
+            StringBuilder rsb = new StringBuilder();
+            for (int i = 0; i < rules.Count; i++)
+            {
+                PoiFilterRule r = rules[i];
+                if (i > 0) rsb.Append(';');
+                rsb.Append(r.PrefabId ?? "").Append('~')
+                   .Append(r.CompareAtMost ? '1' : '0').Append('~')
+                   .Append(r.MinCount).Append('~')
+                   .Append(r.MaxDist).Append('~')
+                   .Append(r.MinYieldGps.ToString(CultureInfo.InvariantCulture)).Append('~')
+                   .Append(r.MinGrade);
+            }
+
+            StringBuilder ssb = new StringBuilder();
+            int nSeeds = Math.Min(seedCount, seeds.Length);
+            for (int i = 0; i < nSeeds; i++)
+            {
+                if (i > 0) ssb.Append(',');
+                ssb.Append(seeds[i].ToString(CultureInfo.InvariantCulture));
+            }
+
+            string recPath = "";
+            if (onBatchRecordFile != null)
+            {
+                string recName = "brec_" + Guid.NewGuid().ToString("N") + ".tsv";
+                string safeDir = ToShortPath(RuntimeDir);
+                recPath = Path.Combine(string.IsNullOrEmpty(safeDir) ? RuntimeDir : safeDir, recName);
+            }
+
+            try
+            {
+                string req = string.Format(CultureInfo.InvariantCulture,
+                    "PREVIEW {0}|0|{1}|{2}|{3}|BATCHPOI|{4}|{5}|{6}|{7}",
+                    clusterFilePath ?? "",
+                    worldIndex,
+                    activeDlcCsv ?? "",
+                    storyTraitCsv ?? "",
+                    mixingCsv ?? "",
+                    rsb.ToString(),
+                    ssb.ToString(),
+                    recPath);
+
+                string resp = Cmd(req, 15000, 60000);
+                if (!string.IsNullOrEmpty(recPath) && File.Exists(recPath))
+                {
+                    try { onBatchRecordFile(recPath); } catch { }
+                }
+                if (string.IsNullOrEmpty(resp))
+                {
+                    err = "游戏未响应批量筛选请求，请重试";
+                    return res;
+                }
+
+            if (resp.StartsWith("OK bmatch:", StringComparison.Ordinal) ||
+                resp.StartsWith("OK bmiss:", StringComparison.Ordinal))
+            {
+                int colon = resp.IndexOf(':');
+                string[] f = resp.Substring(colon + 1).Split('|');
+                if (f.Length >= 3)
+                {
+                    int.TryParse(f[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out res.MatchedSeed);
+                    int.TryParse(f[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out res.CheckedCount);
+                    int.TryParse(f[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out res.SkippedBadSeeds);
+                }
+                return res;
+            }
+
+            string cleanResp = resp.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (cleanResp.IndexOf("batch-fallback", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                cleanResp.IndexOf("bad-seed", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                res.FallbackNeeded = true;
+                return res;
+            }
+            if (cleanResp.Contains("in-save"))
+                err = "存档内无法执行极速批量筛选，将自动切换兼容模式。";
+            else if (cleanResp.Contains("gen-offline:") || cleanResp.Contains("render-offline:"))
+                err = "该批种子地形生成失败：" + cleanResp;
+            else
+                err = "地图生成失败：" + cleanResp;
+                return res;
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(recPath))
+                {
+                    try { if (File.Exists(recPath)) File.Delete(recPath); } catch { }
+                }
+            }
+        }
+
         public MapPreviewData GenerateMapPreview(
             string clusterFilePath,
             int seed,

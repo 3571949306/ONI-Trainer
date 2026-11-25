@@ -345,6 +345,14 @@ namespace ONITrainer
             return list;
         }
 
+        public static string GetPoiFriendlyName(string prefabId)
+        {
+            if (string.IsNullOrEmpty(prefabId)) return "";
+            string fn;
+            if (s_poiFallbackNames.TryGetValue(prefabId, out fn)) return fn;
+            return prefabId;
+        }
+
         public static string GetZoneName(byte z)
         {
             if (z < s_zoneNames.Length) return s_zoneNames[z];

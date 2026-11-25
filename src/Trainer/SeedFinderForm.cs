@@ -62,12 +62,16 @@ namespace ONITrainer
         CheckedListBox _clbTraits;
         CheckBox _chkNoTraits;
         Button _btnExclude, _btnClearPlanet, _btnClearAll, _btnSearch, _btnStop, _btnNext, _btnCopyCoord, _btnCopySeed, _btnPreviewMap;
-        Button _btnSyncCfg, _btnFav, _btnHistory;
-        string _storyCode = "", _mixingCode = "";
+        Button _btnSyncCfg, _btnFav, _btnHistory, _btnCommunity, _btnSubmitSeed;
+        string _otherCode = "", _storyCode = "", _mixingCode = "", _storyIdsCsv = "";
+        bool _templateAutoSynced;
+        int _lastIndexMatchedSeed;
+        Action _seedDbStateHandler;
         SeedHistoryForm _historyForm;
+        CommunitySeedForm _communityForm;
 
         GroupBox _gPoiFilter;
-        ComboBox _cboPoiPlanet, _cboPoiType, _cboPoiOp, _cboPoiGrade;
+        ComboBox _cboPoiPlanet, _cboPoiType, _cboPoiOp, _cboPoiGrade, _cboWorkers;
         NumericUpDown _numPoiCount, _numPoiDist, _numPoiYield;
         ListBox _lstPoiRules;
         Button _btnAddPoi, _btnClearPoi;
@@ -102,7 +106,7 @@ namespace ONITrainer
             DpiHelper.ScaleLayout(this);
             float scale = DpiHelper.GetDpiScale();
             _baseClientHeight = ClientSize.Height;
-            _advClientHeight = (int)Math.Round(808 * scale);
+            _advClientHeight = (int)Math.Round(812 * scale);
             if (scale > 1.01f)
             {
                 _lstPlanets.ItemHeight = (int)Math.Round(24 * scale);
@@ -111,9 +115,13 @@ namespace ONITrainer
 
             _advChangedHandler = OnGlobalAdvancedModeChanged;
             TrainerSettings.AdvancedModeChanged += _advChangedHandler;
+            _seedDbStateHandler = () => SetUi(RefreshUploadPendingBadge);
+            CommunitySeedDb.StateChanged += _seedDbStateHandler;
             ApplyAdvancedModeLayout();
 
             InitializeCatalog();
+            RefreshUploadPendingBadge();
+            TriggerCommunityAutoPull();
         }
 
         Color C(int rgb) { return Color.FromArgb(255, (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF); }
@@ -130,9 +138,13 @@ namespace ONITrainer
                 Location = new Point(16, 4),
                 Size = new Size(190, 26)
             });
-            top.Controls.Add(Lbl("按已安装 DLC 与游戏官方规则模拟开局，后台自动寻找符合全部星球特质的坐标", 18, 30, 448, SUB));
+            top.Controls.Add(Lbl("按本机 DLC 与游戏规则模拟开局，后台自动筛选星球特质", 18, 30, 352, SUB));
 
-            _btnSyncCfg = B("读取游戏设置", 614, 11, 98, 30, false);
+            _btnCommunity = B("社区库", 552, 11, 66, 30, false);
+            _btnCommunity.Click += (s, e) => OpenCommunityDbDialog();
+            top.Controls.Add(_btnCommunity);
+
+            _btnSyncCfg = B("读取游戏设置", 624, 11, 88, 30, false);
             _btnSyncCfg.Click += (s, e) => SyncGameConfig();
             top.Controls.Add(_btnSyncCfg);
 
@@ -150,8 +162,9 @@ namespace ONITrainer
                 ForeColor = C(SUB),
                 Font = _fontReg,
                 TextAlign = ContentAlignment.MiddleRight,
-                Location = new Point(470, 15),
-                Size = new Size(138, 22)
+                AutoEllipsis = true,
+                Location = new Point(376, 14),
+                Size = new Size(170, 22)
             };
             top.Controls.Add(_lblGameDir);
 
@@ -222,6 +235,7 @@ namespace ONITrainer
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = _fontReg
             };
+            _txtTemplateCoord.TextChanged += (s, e) => { if (!_suppressEvents) _templateAutoSynced = false; };
             gCfg.Controls.Add(_txtTemplateCoord);
 
 
@@ -322,11 +336,11 @@ namespace ONITrainer
             gRes.Controls.Add(_btnNext);
             gRes.Controls.Add(_lblSearchStatus);
 
-            gRes.Controls.Add(Lbl("目的地坐标", 14, 64, 76, TXT));
+            gRes.Controls.Add(Lbl("目的地坐标", 14, 64, 72, TXT));
             _txtCoord = new TextBox
             {
-                Location = new Point(92, 61),
-                Size = new Size(248, 26),
+                Location = new Point(88, 61),
+                Size = new Size(186, 26),
                 ReadOnly = false,
                 BackColor = C(INPUT),
                 ForeColor = C(ACC),
@@ -336,26 +350,31 @@ namespace ONITrainer
             _txtCoord.TextChanged += (s, e) => OnCoordTextChanged();
             gRes.Controls.Add(_txtCoord);
 
-            _btnCopyCoord = B("复制坐标", 348, 60, 76, 28, false);
+            _btnCopyCoord = B("复制坐标", 278, 60, 68, 28, false);
             _btnCopyCoord.Enabled = false;
             _btnCopyCoord.Click += (s, e) => CopyCoord(true);
-            _btnCopySeed = B("复制种子", 430, 60, 76, 28, false);
+            _btnCopySeed = B("复制种子", 350, 60, 68, 28, false);
             _btnCopySeed.Enabled = false;
             _btnCopySeed.Click += (s, e) => CopyCoord(false);
-            _btnPreviewMap = B("预览地图", 512, 60, 84, 28, true);
+            _btnPreviewMap = B("预览地图", 422, 60, 72, 28, true);
             _btnPreviewMap.Enabled = false;
             _btnPreviewMap.Click += (s, e) => OpenMapPreview();
-            _btnFav = B("★ 收藏", 602, 60, 72, 28, false);
+            _btnFav = B("★ 收藏", 498, 60, 64, 28, false);
             _btnFav.Enabled = false;
             _btnFav.Click += (s, e) => ToggleFavoriteCurrent();
-            _btnHistory = B("历史/收藏", 680, 60, 84, 28, false);
+            _btnHistory = B("历史/收藏", 566, 60, 74, 28, false);
             _btnHistory.Click += (s, e) => OpenHistoryDialog();
-            _lblSeedOnly = Lbl("纯种子：—", 770, 64, 108, SUB);
+            _btnSubmitSeed = B("上传记录(0)", 644, 60, 104, 28, false);
+            _btnSubmitSeed.Enabled = true;
+            _btnSubmitSeed.Click += (s, e) => OpenSubmitSeedDialog();
+            _lblSeedOnly = Lbl("纯种子：—", 752, 64, 128, SUB);
+            _lblSeedOnly.AutoEllipsis = true;
             gRes.Controls.Add(_btnCopyCoord);
             gRes.Controls.Add(_btnCopySeed);
             gRes.Controls.Add(_btnPreviewMap);
             gRes.Controls.Add(_btnFav);
             gRes.Controls.Add(_btnHistory);
+            gRes.Controls.Add(_btnSubmitSeed);
             gRes.Controls.Add(_lblSeedOnly);
 
             _txtPreview = new TextBox
@@ -373,7 +392,7 @@ namespace ONITrainer
             gRes.Controls.Add(_txtPreview);
 
 
-            _gPoiFilter = Card("高级功能：按间歇泉 / 火山 / 遗迹二次筛选（主菜单或存档内均可）", 16, 568, 888, 180);
+            _gPoiFilter = Card("高级功能：按间歇泉 / 火山 / 遗迹筛选（支持离线多进程极速筛选）", 16, 568, 888, 184);
             _gPoiFilter.Visible = false;
 
             _gPoiFilter.Controls.Add(Lbl("目标行星", 12, 27, 62, TXT));
@@ -493,7 +512,7 @@ namespace ONITrainer
             _lstPoiRules = new ListBox
             {
                 Location = new Point(14, 88),
-                Size = new Size(860, 62),
+                Size = new Size(860, 58),
                 BackColor = C(CARD),
                 ForeColor = C(ACC),
                 BorderStyle = BorderStyle.FixedSingle,
@@ -503,7 +522,20 @@ namespace ONITrainer
             _lstPoiRules.MouseDoubleClick += (s, e) => RemoveSelectedPoiRule();
             _gPoiFilter.Controls.Add(_lstPoiRules);
 
-            _gPoiFilter.Controls.Add(Lbl("评级说明（按同种喷孔理论均产百分位）：S级 ≥85%(前15%) · A级 65~84% · B级 35~64% · C级 <35%；双击列表项可删除。", 14, 154, 860, SUB));
+            _gPoiFilter.Controls.Add(Lbl("评级：S ≥85%(前15%) · A 65~84% · B 35~64% · C <35%；双击条件可删。", 14, 154, 584, SUB));
+            _gPoiFilter.Controls.Add(Lbl("并行进程", 604, 154, 58, TXT));
+            _cboWorkers = new ComboBox
+            {
+                Location = new Point(664, 150),
+                Size = new Size(210, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = C(INPUT),
+                ForeColor = C(TXT),
+                FlatStyle = FlatStyle.Flat,
+                Font = _fontReg
+            };
+            PopulateWorkersCombo();
+            _gPoiFilter.Controls.Add(_cboWorkers);
 
             body.Controls.Add(gCfg);
             body.Controls.Add(gPlanets);
@@ -1074,15 +1106,96 @@ namespace ONITrainer
                 }
             }
 
+            string tplCoord = _txtTemplateCoord.Text;
+            ClusterDef cluster = _curCluster;
+            WorldGenCatalog catalog = _catalog;
+            string dlcCsv = GetActiveDlcCsv();
+            List<BoundPoiRule> poiRulesSnap = new List<BoundPoiRule>(_poiRules);
+
+
+            if (!findNext) _lastIndexMatchedSeed = 0;
+            bool tryIndexNow = !findNext || _lastIndexMatchedSeed > 0;
+            if (tryIndexNow)
+            {
+                List<KeyValuePair<int, List<PoiFilterRule>>> idxGroups = null;
+                if (usePoiFilter)
+                {
+                    Dictionary<int, List<PoiFilterRule>> grpMap = new Dictionary<int, List<PoiFilterRule>>();
+                    for (int i = 0; i < poiRulesSnap.Count; i++)
+                    {
+                        BoundPoiRule b = poiRulesSnap[i];
+                        List<PoiFilterRule> rl;
+                        if (!grpMap.TryGetValue(b.PlacementIndex, out rl))
+                        {
+                            rl = new List<PoiFilterRule>();
+                            grpMap[b.PlacementIndex] = rl;
+                        }
+                        rl.Add(b.Rule);
+                    }
+                    idxGroups = new List<KeyValuePair<int, List<PoiFilterRule>>>(grpMap);
+                }
+
+                Stopwatch idxSw = Stopwatch.StartNew();
+                SeedSearchResult idxMatched;
+                Dictionary<int, MapPreviewData> idxMaps;
+                int idxTotalCount;
+                int minExcl = findNext ? _lastIndexMatchedSeed : 0;
+                if (CommunitySeedDb.TryFastIndexMatch(
+                    catalog, cluster, list, hasTraitConstraint, idxGroups,
+                    dlcCsv, _mixingCode, tplCoord, minExcl,
+                    out idxMatched, out idxMaps, out idxTotalCount))
+                {
+                    idxSw.Stop();
+                    idxMatched.ElapsedMs = idxSw.Elapsed.TotalMilliseconds;
+                    _lastIndexMatchedSeed = idxMatched.Seed;
+                    SearchControl instantCtrl = new SearchControl { Tested = idxMatched.SeedsTested };
+                    _searchCtrl = instantCtrl;
+                    FinishSearchOnUi(
+                        cluster, instantCtrl, idxMatched, idxMaps, null,
+                        string.Format("⚡ 社区/本地索引极速命中（库内共匹配 {0} 个），", idxTotalCount));
+                    return;
+                }
+
+                _lastIndexMatchedSeed = 0;
+            }
+
+            BridgePreviewState st0 = _getBridge != null ? _getBridge() : null;
+            bool hasCustomMixing = !string.IsNullOrEmpty(_mixingCode) && !string.Equals(_mixingCode.Trim(), "0", StringComparison.Ordinal);
+            bool canHeadless = !string.IsNullOrEmpty(_gameDir) && GameInstallationDetector.IsValidGameDir(_gameDir);
+            int workersCfg = TrainerSettings.ParallelWorkers;
+
             if (usePoiFilter)
             {
-                BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                if (st == null || st.Bridge == null)
+                if (hasCustomMixing)
                 {
-                    string msg = "已添加间歇泉/火山高级筛选条件：请先启动《缺氧》游戏（主菜单或存档内均可）再开始筛选。";
+                    if (st0 == null || st0.Bridge == null || st0.InSave)
+                    {
+                        string msg = string.Format(
+                            "检测到已同步自定义 DLC 混搭设置（{0}）；为防止闪退，混搭模式需停留在《缺氧》主菜单再筛选，或返回主菜单关闭混搭后使用多进程离线筛选。",
+                            _mixingCode);
+                        _lblSearchStatus.Text = "⚠ " + msg;
+                        _lblSearchStatus.ForeColor = C(WARN);
+                        MessageBox.Show(this, msg, "需要主菜单连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+                else if (workersCfg == 0)
+                {
+                    if (st0 == null || st0.Bridge == null || st0.InSave)
+                    {
+                        string msg = "当前并行进程设置为「0：仅用游戏主菜单引擎」，请启动《缺氧》并停留在主菜单，或将「并行进程」切换为「自动推荐」以离线筛选。";
+                        _lblSearchStatus.Text = "⚠ " + msg;
+                        _lblSearchStatus.ForeColor = C(WARN);
+                        MessageBox.Show(this, msg, "需要主菜单连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+                else if (!canHeadless && (st0 == null || st0.Bridge == null || st0.InSave))
+                {
+                    string msg = "社区索引库中暂未命中该组合，需本地引擎继续筛选：请先点击右上角「选择游戏目录…」定位《缺氧》安装目录，或启动游戏停留在主菜单。";
                     _lblSearchStatus.Text = "⚠ " + msg;
                     _lblSearchStatus.ForeColor = C(WARN);
-                    MessageBox.Show(this, msg, "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, msg, "需要游戏目录或主菜单连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
             }
@@ -1098,11 +1211,6 @@ namespace ONITrainer
                 startSeed = new Random(Environment.TickCount).Next(1, 1800000000);
             }
 
-            string tplCoord = _txtTemplateCoord.Text;
-            ClusterDef cluster = _curCluster;
-            WorldGenCatalog catalog = _catalog;
-            string dlcCsv = GetActiveDlcCsv();
-            List<BoundPoiRule> poiRulesSnap = new List<BoundPoiRule>(_poiRules);
             SearchControl ctrl = new SearchControl();
             _searchCtrl = ctrl;
 
@@ -1110,7 +1218,9 @@ namespace ONITrainer
             _btnNext.Enabled = false;
             _btnStop.Enabled = true;
             _lblSearchStatus.Text = usePoiFilter
-                ? "高级筛选启动中… 先快速匹配特质再调用游戏验证地图"
+                ? ((!hasCustomMixing && canHeadless && workersCfg != 0)
+                    ? string.Format("正在启动 {0} 核并行筛选…", cluster.FixedCoordinate > 0 ? 1 : TrainerSettings.EffectiveWorkerCount)
+                    : "高级筛选启动中… 先匹配特质再进行验证")
                 : "正在后台多线程筛选种子，请稍候…";
             _lblSearchStatus.ForeColor = C(WARN);
 
@@ -1152,6 +1262,10 @@ namespace ONITrainer
                         }
                     });
                 });
+                if (res != null && !ctrl.Stop)
+                {
+                    CommunitySeedDb.RecordTraitMatchSeed(res, cluster, GetActiveDlcCsv(), _storyCode, _mixingCode, catalog, true);
+                }
             }
             catch { }
 
@@ -1200,216 +1314,559 @@ namespace ONITrainer
                 rl.Add(b.Rule);
             }
 
+            List<KeyValuePair<int, List<PoiFilterRule>>> orderedGroups =
+                new List<KeyValuePair<int, List<PoiFilterRule>>>(grouped);
+            orderedGroups.Sort((a, b) =>
+            {
+                int c = b.Value.Count.CompareTo(a.Value.Count);
+                if (c != 0) return c;
+                int aStart = (a.Key == cluster.StartWorldIndex) ? 0 : 1;
+                int bStart = (b.Key == cluster.StartWorldIndex) ? 0 : 1;
+                c = aStart.CompareTo(bStart);
+                return c != 0 ? c : a.Key.CompareTo(b.Key);
+            });
+
+            string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
+            string storyCodeSnap = _storyCode ?? "";
+            string hStoryIds = _storyIdsCsv ?? "";
+            string mixingSnap = _mixingCode ?? "";
+            bool hasCustomMixing = !string.IsNullOrEmpty(mixingSnap) && !string.Equals(mixingSnap.Trim(), "0", StringComparison.Ordinal);
+            bool canHeadless = !string.IsNullOrEmpty(_gameDir) && GameInstallationDetector.IsValidGameDir(_gameDir);
+            int workersCfg = TrainerSettings.ParallelWorkers;
+            BridgePreviewState stInit = _getBridge != null ? _getBridge() : null;
+            bool useWorkerPool = !hasCustomMixing && canHeadless && (workersCfg != 0 || (stInit != null && stInit.InSave));
+
+            List<int> partialIndexPassSeeds;
+            HashSet<int> skipIndexedPrimarySeeds;
+            CommunitySeedDb.CollectIndexAcceleration(
+                catalog, cluster, list, hasTraitConstraint, orderedGroups, dlcCsv, mixingSnap, 1,
+                out partialIndexPassSeeds, out skipIndexedPrimarySeeds);
+
+            Action<string> onRecordBatchFile = (recFile) =>
+            {
+                CommunitySeedDb.RecordScreenedBatchFile(recFile, cluster, dlcCsv, storyCodeSnap, mixingSnap, tplCoord, catalog);
+            };
+            Action<MapPreviewData> onRecordMap = (md) =>
+            {
+                CommunitySeedDb.RecordScreenedMap(md, cluster, dlcCsv, storyCodeSnap, mixingSnap, tplCoord, catalog, false);
+            };
+
+            CandidateSeedProducer producer = null;
+            WorldGenWorkerPool wpool = null;
             try
             {
-                while (!ctrl.Stop)
+                if (hasTraitConstraint && cluster.FixedCoordinate <= 0)
+                    producer = new CandidateSeedProducer(catalog, cluster, list, startSeed, ctrl);
+
+                if (useWorkerPool)
                 {
-                    int candidateSeed;
-                    Dictionary<int, List<WorldTraitDef>> traitsMap;
-
-                    if (hasTraitConstraint)
+                    int nWorkers = cluster.FixedCoordinate > 0 ? 1 : Math.Max(1, TrainerSettings.EffectiveWorkerCount);
+                    string catPath = WorldGenWorkerPool.PrepareCatalogFile(stInit);
+                    WorldGenWorkerPool poolTmp = new WorldGenWorkerPool(_gameDir, dlcCsv, nWorkers, catPath);
+                    string pInitErr;
+                    if (!poolTmp.Initialize(out pInitErr))
                     {
-                        SearchControl subCtrl = new SearchControl();
-                        Thread cancelWatch = new Thread(() =>
-                        {
-                            while (!subCtrl.Stop && !ctrl.Stop) Thread.Sleep(50);
-                            subCtrl.Stop = true;
-                        });
-                        cancelWatch.IsBackground = true;
-                        cancelWatch.Start();
+                        poolTmp.Dispose();
+                        if (stInit != null && stInit.Bridge != null && !stInit.InSave)
+                            useWorkerPool = false;
+                        else
+                            abortErr = pInitErr ?? "多进程初始化失败";
+                    }
+                    else
+                    {
+                        wpool = poolTmp;
+                    }
+                }
 
-                        SeedSearchResult traitRes = SeedSearcher.SearchSync(catalog, cluster, list, curSeed, tplCoord, subCtrl, (tested, elapsedMs) =>
+                if (abortErr == null && useWorkerPool && wpool != null)
+                {
+                    int activeWorkers = wpool.ActiveWorkerCount;
+                    KeyValuePair<int, List<PoiFilterRule>> primaryGroup = orderedGroups[0];
+                    long lastUiTick = 0;
+
+                    if (cluster.FixedCoordinate > 0)
+                    {
+                        int candidateSeed = cluster.FixedCoordinate;
+                        totalTraitTested = 1;
+                        bool allOk = true;
+                        Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
+                        for (int gi = 0; gi < orderedGroups.Count && !ctrl.Stop; gi++)
                         {
-                            if (ctrl.Stop) subCtrl.Stop = true;
-                            string msg = badSeedsSkipped > 0
-                                ? string.Format("高级筛选中（特质阶段）… 已检 {0:N0} 种子 · 地图已验 {1} 次（跳过 {2} 坏种子）",
-                                    totalTraitTested + tested, mapsTested, badSeedsSkipped)
-                                : string.Format("高级筛选中（特质阶段）… 已检 {0:N0} 种子 · 地图已验 {1} 次",
-                                    totalTraitTested + tested, mapsTested);
+                            KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                            string pErr;
+                            MapPreviewData md = wpool.RunPreviewCommand(
+                                cluster.FilePath, candidateSeed, kv.Key, dlcCsv, hStoryIds, false, gi, out pErr);
+                            mapsTested++;
+                            if (md == null)
+                            {
+                                abortErr = IsBadSeedPreviewError(pErr)
+                                    ? (cluster.DisplayName + " 为固定种子，且无法生成该世界：" + pErr)
+                                    : (pErr ?? "地图生成失败");
+                                allOk = false;
+                                break;
+                            }
+                            curMaps[kv.Key] = md;
+                            onRecordMap(md);
+                            if (!md.MatchesAllRules(kv.Value)) { allOk = false; break; }
+                        }
+                        if (allOk && !ctrl.Stop && abortErr == null)
+                        {
+                            matchedMaps = curMaps;
+                            matched = new SeedSearchResult
+                            {
+                                Seed = candidateSeed,
+                                Coordinate = SeedSearcher.FormatCoordinate(cluster.CoordinatePrefix, candidateSeed, tplCoord),
+                                SeedsTested = totalTraitTested,
+                                ElapsedMs = sw.Elapsed.TotalMilliseconds,
+                                PlanetTraits = catalog.EvaluateClusterSeed(cluster, candidateSeed)
+                            };
+                        }
+                    }
+                    else
+                    {
+                        int partialIdx = 0;
+                        while (!ctrl.Stop && abortErr == null && matched == null)
+                        {
+                            int foundPrimary = 0, chkDelta = 0, skpDelta = 0;
+                            if (partialIndexPassSeeds != null && partialIdx < partialIndexPassSeeds.Count)
+                            {
+                                foundPrimary = partialIndexPassSeeds[partialIdx++];
+                            }
+                            else
+                            {
+                                string sErr;
+                                int baseCheckedBefore = mapsTested;
+                                int baseSkippedBefore = badSeedsSkipped;
+
+                                bool okPrimary = wpool.ScreenParallel(
+                                    producer,
+                                    hasTraitConstraint,
+                                    cluster.FilePath,
+                                    primaryGroup.Key,
+                                    dlcCsv,
+                                    hStoryIds,
+                                    primaryGroup.Value,
+                                    curSeed,
+                                    ctrl,
+                                    (tTested, curChk, curSkp, curSampleSeed) =>
+                                    {
+                                        long nowTick = Environment.TickCount & 0x7FFFFFFF;
+                                        if (nowTick - lastUiTick < 120) return;
+                                        lastUiTick = nowTick;
+                                        int cumMaps = baseCheckedBefore + baseSkippedBefore + curChk + curSkp;
+                                        int cumSkip = baseSkippedBefore + curSkp;
+                                        SetUi(() =>
+                                        {
+                                            if (_searchCtrl == ctrl && !ctrl.Stop)
+                                            {
+                                                double sec = sw.Elapsed.TotalSeconds;
+                                                string rateNote = (sec > 0.25 && cumMaps > 0)
+                                                    ? string.Format(" ({0:0.0}星/s)", cumMaps / sec) : "";
+                                                string skipNote = cumSkip > 0 ? string.Format(" · 跳{0}", cumSkip) : "";
+                                                _lblSearchStatus.Text = string.Format(
+                                                    "{0}核极速筛选 | 特质 {1:N0} · 地图 {2}{3}{4} · {5:0}s",
+                                                    activeWorkers, tTested, cumMaps, rateNote, skipNote, sec);
+                                                _lblSearchStatus.ForeColor = C(WARN);
+                                            }
+                                        });
+                                    },
+                                    out foundPrimary,
+                                    out chkDelta,
+                                    out skpDelta,
+                                    out sErr,
+                                    skipIndexedPrimarySeeds,
+                                    onRecordBatchFile,
+                                    onRecordMap);
+
+                                totalTraitTested = Interlocked.Read(ref ctrl.Tested);
+                                mapsTested += chkDelta + skpDelta;
+                                badSeedsSkipped += skpDelta;
+
+                                if (ctrl.Stop) break;
+                                if (!okPrimary)
+                                {
+                                    abortErr = sErr ?? "未在种子空间内找到满足全部条件的世界种子。";
+                                    break;
+                                }
+
+                                if (!hasTraitConstraint)
+                                {
+                                    curSeed = foundPrimary + 1;
+                                    if (curSeed > SeedSearcher.MaxSearchSeed) curSeed = 1;
+                                }
+                            }
+
+                            bool allOk = true;
+                            Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
+                            for (int gi = 1; gi < orderedGroups.Count && !ctrl.Stop; gi++)
+                            {
+                                KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                                string secErr;
+                                MapPreviewData secMap = wpool.RunPreviewCommand(
+                                    cluster.FilePath, foundPrimary, kv.Key, dlcCsv, hStoryIds, true, gi, out secErr);
+                                mapsTested++;
+                                if (secMap == null)
+                                {
+                                    if (IsBadSeedPreviewError(secErr))
+                                    {
+                                        badSeedsSkipped++;
+                                        consecutiveGenFails++;
+                                        if (consecutiveGenFails >= 25)
+                                            abortErr = "连续 25 个候选种子均因特质布局冲突无法生成地形，请减少部分互斥或高占比特质后重试。";
+                                        allOk = false;
+                                        break;
+                                    }
+                                    abortErr = secErr ?? "副星地图生成失败";
+                                    allOk = false;
+                                    break;
+                                }
+                                consecutiveGenFails = 0;
+                                curMaps[kv.Key] = secMap;
+                                onRecordMap(secMap);
+                                if (!secMap.MatchesAllRules(kv.Value))
+                                {
+                                    allOk = false;
+                                    break;
+                                }
+                            }
+
+                            if (abortErr != null || ctrl.Stop) break;
+                            if (!allOk) continue;
+
                             SetUi(() =>
                             {
                                 if (_searchCtrl == ctrl && !ctrl.Stop)
                                 {
-                                    _lblSearchStatus.Text = msg;
-                                    _lblSearchStatus.ForeColor = C(WARN);
+                                    _lblSearchStatus.Text = string.Format("命中候选 #{0}，正在渲染完整预览地形…", foundPrimary);
+                                    _lblSearchStatus.ForeColor = C(ACC);
                                 }
                             });
-                        });
-                        subCtrl.Stop = true;
-                        try { cancelWatch.Join(100); } catch { }
 
-                        if (ctrl.Stop) break;
-                        if (traitRes == null)
-                        {
-                            abortErr = "未在种子空间内找到满足特质条件的候选种子。";
-                            break;
-                        }
-                        totalTraitTested += traitRes.SeedsTested;
-                        candidateSeed = traitRes.Seed;
-                        traitsMap = traitRes.PlanetTraits;
-                    }
-                    else
-                    {
-                        candidateSeed = curSeed;
-                        totalTraitTested++;
-                        traitsMap = catalog.EvaluateClusterSeed(cluster, candidateSeed);
-                    }
+                            BridgePreviewState stFull = _getBridge != null ? _getBridge() : null;
+                            bool canBridgeFull = (stFull != null && stFull.Bridge != null && !stFull.InSave && !hasCustomMixing);
 
-                    if (ctrl.Stop) break;
-
-                    SetUi(() =>
-                    {
-                        if (_searchCtrl == ctrl && !ctrl.Stop)
-                        {
-                            double sec = sw.Elapsed.TotalSeconds;
-                            string rateNote = (sec > 0.25 && mapsTested > 0)
-                                ? string.Format(" ({0:0.0} 星/s)", mapsTested / sec)
-                                : "";
-                            string skipNote = badSeedsSkipped > 0
-                                ? string.Format(" · 已跳过 {0} 坏种子", badSeedsSkipped)
-                                : "";
-                            _lblSearchStatus.Text = string.Format(
-                                "极速筛选中（验证 #{0}）… 特质已检 {1:N0} · 地图已验 {2} 次{3}{4} · 耗时 {5:0.0}s",
-                                candidateSeed, totalTraitTested, mapsTested, rateNote, skipNote, sec);
-                            _lblSearchStatus.ForeColor = C(WARN);
-                        }
-                    });
-
-                    BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                    if (st == null || st.Bridge == null)
-                    {
-                        abortErr = "游戏连接已断开，高级筛选停止。";
-                        break;
-                    }
-
-
-                    List<KeyValuePair<int, List<PoiFilterRule>>> orderedGroups =
-                        new List<KeyValuePair<int, List<PoiFilterRule>>>(grouped);
-                    orderedGroups.Sort((a, b) =>
-                    {
-                        int c = b.Value.Count.CompareTo(a.Value.Count);
-                        if (c != 0) return c;
-                        int aStart = (a.Key == cluster.StartWorldIndex) ? 0 : 1;
-                        int bStart = (b.Key == cluster.StartWorldIndex) ? 0 : 1;
-                        c = aStart.CompareTo(bStart);
-                        return c != 0 ? c : a.Key.CompareTo(b.Key);
-                    });
-
-                    bool allOk = true;
-                    string sArg = string.IsNullOrEmpty(_storyCode) ? "" : ("CODE:" + _storyCode);
-                    Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
-                    for (int gi = 0; gi < orderedGroups.Count; gi++)
-                    {
-                        KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
-                        if (ctrl.Stop) { allOk = false; break; }
-                        string err;
-                        MapPreviewData mapData = st.Bridge.GenerateFastPoiPreview(
-                            cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, _mixingCode, out err);
-                        mapsTested++;
-                        if (mapData == null)
-                        {
-                            if (IsBadSeedPreviewError(err))
+                            for (int gi = 0; gi < orderedGroups.Count && !ctrl.Stop; gi++)
                             {
-                                if (cluster.FixedCoordinate > 0)
-                                {
-                                    abortErr = cluster.DisplayName + " 为固定种子，且游戏无法生成该世界：" + err;
-                                    allOk = false;
-                                    break;
-                                }
-                                badSeedsSkipped++;
-                                consecutiveGenFails++;
-                                if (consecutiveGenFails >= 25)
-                                {
-                                    abortErr = "连续 25 个候选种子均因特质布局冲突无法生成地形，请减少部分互斥或高占比特质后重试。";
-                                    allOk = false;
-                                    break;
-                                }
-                                allOk = false;
-                                break;
-                            }
-                            abortErr = err ?? "地图生成失败";
-                            allOk = false;
-                            break;
-                        }
-                        consecutiveGenFails = 0;
-                        curMaps[kv.Key] = mapData;
-                        if (!mapData.MatchesAllRules(kv.Value))
-                        {
-                            allOk = false;
-                            break;
-                        }
-                    }
+                                KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                                MapPreviewData curMd;
+                                if (curMaps.TryGetValue(kv.Key, out curMd) && curMd != null && !curMd.IsPoiOnly)
+                                    continue;
 
-
-                    if (allOk && !ctrl.Stop && abortErr == null)
-                    {
-                        for (int gi = 0; gi < orderedGroups.Count; gi++)
-                        {
-                            if (ctrl.Stop) { allOk = false; break; }
-                            KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
-                            MapPreviewData curMd;
-                            if (curMaps.TryGetValue(kv.Key, out curMd) && curMd != null && !curMd.IsPoiOnly)
-                                continue;
-                            string fullErr;
-                            MapPreviewData fullData = st.Bridge.GenerateMapPreview(
-                                cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, _mixingCode, out fullErr);
-                            if (fullData == null)
-                            {
-                                if (IsBadSeedPreviewError(fullErr))
+                                string fullErr;
+                                MapPreviewData fullData = canBridgeFull
+                                    ? stFull.Bridge.GenerateMapPreview(cluster.FilePath, foundPrimary, kv.Key, dlcCsv, sArg, mixingSnap, out fullErr)
+                                    : wpool.RunPreviewCommand(cluster.FilePath, foundPrimary, kv.Key, dlcCsv, hStoryIds, false, gi, out fullErr);
+                                if (fullData == null)
                                 {
-                                    if (cluster.FixedCoordinate > 0)
+                                    if (IsBadSeedPreviewError(fullErr))
                                     {
-                                        abortErr = cluster.DisplayName + " 为固定种子，且游戏无法生成该世界：" + fullErr;
+                                        badSeedsSkipped++;
                                         allOk = false;
                                         break;
                                     }
-                                    badSeedsSkipped++;
-                                    consecutiveGenFails++;
+                                    abortErr = fullErr ?? "完整地图验证失败";
                                     allOk = false;
                                     break;
                                 }
-                                abortErr = fullErr ?? "完整地图验证失败";
-                                allOk = false;
-                                break;
+                                curMaps[kv.Key] = fullData;
+                                onRecordMap(fullData);
+                                if (!fullData.MatchesAllRules(kv.Value))
+                                {
+                                    allOk = false;
+                                    break;
+                                }
                             }
-                            curMaps[kv.Key] = fullData;
-                            if (!fullData.MatchesAllRules(kv.Value))
+
+                            if (abortErr != null || ctrl.Stop) break;
+                            if (allOk)
                             {
-                                allOk = false;
+                                matchedMaps = curMaps;
+                                matched = new SeedSearchResult
+                                {
+                                    Seed = foundPrimary,
+                                    Coordinate = SeedSearcher.FormatCoordinate(cluster.CoordinatePrefix, foundPrimary, tplCoord),
+                                    SeedsTested = totalTraitTested,
+                                    ElapsedMs = sw.Elapsed.TotalMilliseconds,
+                                    PlanetTraits = catalog.EvaluateClusterSeed(cluster, foundPrimary)
+                                };
                                 break;
                             }
                         }
                     }
+                }
+                else if (abortErr == null)
+                {
 
-                    if (abortErr != null || ctrl.Stop) break;
+                    bool batchFallback = false;
+                    int[] candBuf = new int[4];
+                    KeyValuePair<int, List<PoiFilterRule>> primaryGroup = orderedGroups[0];
 
-                    if (allOk)
+                    while (!ctrl.Stop)
                     {
-                        matchedMaps = curMaps;
-                        matched = new SeedSearchResult
+                        int batchCount = 0;
+                        if (producer != null)
                         {
-                            Seed = candidateSeed,
-                            Coordinate = SeedSearcher.FormatCoordinate(cluster.CoordinatePrefix, candidateSeed, tplCoord),
-                            SeedsTested = totalTraitTested,
-                            ElapsedMs = sw.Elapsed.TotalMilliseconds,
-                            PlanetTraits = traitsMap
-                        };
-                        break;
-                    }
+                            while (!ctrl.Stop)
+                            {
+                                batchCount = producer.TakeBatch(candBuf, candBuf.Length, 150);
+                                if (batchCount > 0 || producer.IsExhausted) break;
+                                long tTested = Interlocked.Read(ref ctrl.Tested);
+                                SetUi(() =>
+                                {
+                                    if (_searchCtrl == ctrl && !ctrl.Stop)
+                                    {
+                                        double sec = sw.Elapsed.TotalSeconds;
+                                        string rateNote = (sec > 0.25 && mapsTested > 0)
+                                            ? string.Format(" ({0:0.0}星/s)", mapsTested / sec) : "";
+                                        string skipNote = badSeedsSkipped > 0
+                                            ? string.Format(" · 跳{0}", badSeedsSkipped) : "";
+                                        _lblSearchStatus.Text = string.Format(
+                                            "特质筛选中… 已检 {0:N0} · 地图 {1}{2}{3} · {4:0}s",
+                                            tTested, mapsTested, rateNote, skipNote, sec);
+                                        _lblSearchStatus.ForeColor = C(WARN);
+                                    }
+                                });
+                            }
+                            totalTraitTested = Interlocked.Read(ref ctrl.Tested);
+                            if (ctrl.Stop) break;
+                            if (batchCount == 0)
+                            {
+                                abortErr = "未在种子空间内找到满足特质条件的候选种子。";
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            int nSeq = cluster.FixedCoordinate > 0 ? 1 : candBuf.Length;
+                            for (int si = 0; si < nSeq; si++)
+                            {
+                                int s = (cluster.FixedCoordinate > 0) ? cluster.FixedCoordinate : curSeed;
+                                candBuf[batchCount++] = s;
+                                totalTraitTested++;
+                                if (cluster.FixedCoordinate > 0) break;
+                                curSeed = s + 1;
+                                if (curSeed > SeedSearcher.MaxSearchSeed) curSeed = 1;
+                            }
+                        }
 
-                    if (cluster.FixedCoordinate > 0)
-                    {
-                        abortErr = cluster.DisplayName + " 为固定种子，无法刷出全部指定间歇泉/火山条件。";
-                        break;
-                    }
+                        if (ctrl.Stop) break;
 
-                    curSeed = candidateSeed + 1;
-                    if (curSeed > SeedSearcher.MaxSearchSeed) curSeed = 1;
+                        SetUi(() =>
+                        {
+                            if (_searchCtrl == ctrl && !ctrl.Stop)
+                            {
+                                double sec = sw.Elapsed.TotalSeconds;
+                                string rateNote = (sec > 0.25 && mapsTested > 0)
+                                    ? string.Format(" ({0:0.0}星/s)", mapsTested / sec) : "";
+                                string skipNote = badSeedsSkipped > 0
+                                    ? string.Format(" · 跳{0}", badSeedsSkipped) : "";
+                                _lblSearchStatus.Text = string.Format(
+                                    "游戏内筛选 #{0} | 特质 {1:N0} · 地图 {2}{3}{4} · {5:0}s",
+                                    candBuf[0], totalTraitTested, mapsTested, rateNote, skipNote, sec);
+                                _lblSearchStatus.ForeColor = C(WARN);
+                            }
+                        });
+
+                        BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                        if (st == null || st.Bridge == null || st.InSave)
+                        {
+                            abortErr = (st != null && st.InSave)
+                                ? "已进入游戏存档，为避免闪退已停止游戏内筛选（请在下方切换「并行进程」为自动推荐）。"
+                                : "游戏连接已断开，高级筛选停止。";
+                            break;
+                        }
+
+                        int checkCount = 0;
+                        if (!batchFallback && cluster.FixedCoordinate <= 0)
+                        {
+                            string bErr;
+                            Bridge.BatchPoiScreenResult bres = st.Bridge.ScreenPoiBatch(
+                                cluster.FilePath, primaryGroup.Key, dlcCsv, sArg, mixingSnap,
+                                primaryGroup.Value, candBuf, batchCount, out bErr, onRecordBatchFile);
+
+                            if (bres.FallbackNeeded)
+                            {
+                                batchFallback = true;
+                            }
+                            else if (bErr != null && bres.CheckedCount == 0 && bres.SkippedBadSeeds == 0)
+                            {
+                                abortErr = bErr;
+                                break;
+                            }
+                            else
+                            {
+                                mapsTested += bres.CheckedCount + bres.SkippedBadSeeds;
+                                badSeedsSkipped += bres.SkippedBadSeeds;
+                                if (bres.CheckedCount > 0)
+                                    consecutiveGenFails = 0;
+                                else
+                                {
+                                    consecutiveGenFails += bres.SkippedBadSeeds;
+                                    if (consecutiveGenFails >= 25)
+                                    {
+                                        abortErr = "连续 25 个候选种子均因特质布局冲突无法生成地形，请减少部分互斥或高占比特质后重试。";
+                                        break;
+                                    }
+                                }
+                                if (bres.MatchedSeed <= 0)
+                                    continue;
+
+                                candBuf[0] = bres.MatchedSeed;
+                                checkCount = 1;
+                            }
+                        }
+
+                        if (checkCount == 0) checkCount = batchCount;
+
+                        for (int bi = 0; bi < checkCount && !ctrl.Stop && abortErr == null; bi++)
+                        {
+                            int candidateSeed = candBuf[bi];
+                            bool allOk = true;
+                            Dictionary<int, MapPreviewData> curMaps = new Dictionary<int, MapPreviewData>();
+
+                            int startGi = (!batchFallback && checkCount == 1 && orderedGroups.Count > 1) ? 1 : 0;
+                            for (int gi = startGi; gi < orderedGroups.Count; gi++)
+                            {
+                                KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                                if (ctrl.Stop) { allOk = false; break; }
+                                BridgePreviewState stLoop = _getBridge != null ? _getBridge() : null;
+                                if (stLoop == null || stLoop.Bridge == null || stLoop.InSave)
+                                {
+                                    abortErr = "已进入存档或游戏已断开，停止游戏内筛选。";
+                                    allOk = false;
+                                    break;
+                                }
+                                string err;
+                                MapPreviewData mapData = stLoop.Bridge.GenerateFastPoiPreview(
+                                    cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, mixingSnap, out err);
+                                mapsTested++;
+                                if (mapData == null)
+                                {
+                                    if (IsBadSeedPreviewError(err))
+                                    {
+                                        if (cluster.FixedCoordinate > 0)
+                                        {
+                                            abortErr = cluster.DisplayName + " 为固定种子，且游戏无法生成该世界：" + err;
+                                            allOk = false;
+                                            break;
+                                        }
+                                        badSeedsSkipped++;
+                                        consecutiveGenFails++;
+                                        if (consecutiveGenFails >= 25)
+                                        {
+                                            abortErr = "连续 25 个候选种子均因特质布局冲突无法生成地形，请减少部分互斥或高占比特质后重试。";
+                                            allOk = false;
+                                            break;
+                                        }
+                                        allOk = false;
+                                        break;
+                                    }
+                                    abortErr = err ?? "地图生成失败";
+                                    allOk = false;
+                                    break;
+                                }
+                                consecutiveGenFails = 0;
+                                curMaps[kv.Key] = mapData;
+                                onRecordMap(mapData);
+                                if (!mapData.MatchesAllRules(kv.Value))
+                                {
+                                    allOk = false;
+                                    break;
+                                }
+                            }
+
+                            if (abortErr != null || ctrl.Stop) break;
+
+                            if (allOk)
+                            {
+                                for (int gi = 0; gi < orderedGroups.Count; gi++)
+                                {
+                                    if (ctrl.Stop) { allOk = false; break; }
+                                    KeyValuePair<int, List<PoiFilterRule>> kv = orderedGroups[gi];
+                                    MapPreviewData curMd;
+                                    if (curMaps.TryGetValue(kv.Key, out curMd) && curMd != null && !curMd.IsPoiOnly)
+                                        continue;
+                                    BridgePreviewState stFull = _getBridge != null ? _getBridge() : null;
+                                    if (stFull == null || stFull.Bridge == null || stFull.InSave)
+                                    {
+                                        abortErr = "已进入存档或游戏已断开，无法在主菜单生成完整预览。";
+                                        allOk = false;
+                                        break;
+                                    }
+                                    string fullErr;
+                                    MapPreviewData fullData = stFull.Bridge.GenerateMapPreview(
+                                        cluster.FilePath, candidateSeed, kv.Key, dlcCsv, sArg, mixingSnap, out fullErr);
+                                    if (fullData == null)
+                                    {
+                                        if (IsBadSeedPreviewError(fullErr))
+                                        {
+                                            if (cluster.FixedCoordinate > 0)
+                                            {
+                                                abortErr = cluster.DisplayName + " 为固定种子，且游戏无法生成该世界：" + fullErr;
+                                                allOk = false;
+                                                break;
+                                            }
+                                            badSeedsSkipped++;
+                                            consecutiveGenFails++;
+                                            allOk = false;
+                                            break;
+                                        }
+                                        abortErr = fullErr ?? "完整地图验证失败";
+                                        allOk = false;
+                                        break;
+                                    }
+                                    curMaps[kv.Key] = fullData;
+                                    onRecordMap(fullData);
+                                    if (!fullData.MatchesAllRules(kv.Value))
+                                    {
+                                        allOk = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (abortErr != null || ctrl.Stop) break;
+
+                            if (allOk)
+                            {
+                                matchedMaps = curMaps;
+                                matched = new SeedSearchResult
+                                {
+                                    Seed = candidateSeed,
+                                    Coordinate = SeedSearcher.FormatCoordinate(cluster.CoordinatePrefix, candidateSeed, tplCoord),
+                                    SeedsTested = totalTraitTested,
+                                    ElapsedMs = sw.Elapsed.TotalMilliseconds,
+                                    PlanetTraits = catalog.EvaluateClusterSeed(cluster, candidateSeed)
+                                };
+                                break;
+                            }
+                        }
+
+                        if (abortErr != null || matched != null || ctrl.Stop) break;
+                        if (cluster.FixedCoordinate > 0)
+                        {
+                            abortErr = cluster.DisplayName + " 为固定种子，无法刷出全部指定间歇泉/火山条件。";
+                            break;
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
                 abortErr = "高级筛选异常：" + ex.Message;
+            }
+            finally
+            {
+                if (wpool != null)
+                {
+                    try { wpool.Dispose(); } catch { }
+                }
+                if (producer != null)
+                {
+                    totalTraitTested = Interlocked.Read(ref ctrl.Tested);
+                    producer.Dispose();
+                }
+                CommunitySeedDb.FlushPendingToDisk();
             }
 
             ctrl.Tested = totalTraitTested;
@@ -1459,9 +1916,14 @@ namespace ONITrainer
                 _previewCache.Clear();
                 if (cachedMaps != null && cachedMaps.Count > 0)
                 {
-                    _previewCacheSeed = res.Seed;
                     foreach (KeyValuePair<int, MapPreviewData> kv in cachedMaps)
-                        _previewCache[kv.Key] = kv.Value;
+                    {
+                        if (kv.Value != null && !kv.Value.IsPoiOnly)
+                        {
+                            _previewCacheSeed = res.Seed;
+                            _previewCache[kv.Key] = kv.Value;
+                        }
+                    }
                 }
 
                 _btnNext.Enabled = cluster.FixedCoordinate <= 0;
@@ -1469,6 +1931,7 @@ namespace ONITrainer
                 _btnCopySeed.Enabled = true;
                 _btnPreviewMap.Enabled = true;
                 _btnFav.Enabled = true;
+                RefreshUploadPendingBadge();
 
                 _suppressEvents = true;
                 _txtCoord.Text = res.Coordinate;
@@ -1611,17 +2074,39 @@ namespace ONITrainer
                         _lblSearchStatus.ForeColor = C(ERR);
                         return;
                     }
-                    string sc = "", mc = "";
+                    string oc = "", sc = "", mc = "", stCsv = "";
                     string[] ps = resp.Split('|');
                     for (int i = 0; i < ps.Length; i++)
                     {
-                        if (ps[i].StartsWith("storyCode=", StringComparison.Ordinal)) sc = ps[i].Substring("storyCode=".Length);
+                        if (ps[i].StartsWith("otherCode=", StringComparison.Ordinal)) oc = ps[i].Substring("otherCode=".Length);
+                        else if (ps[i].StartsWith("storyCode=", StringComparison.Ordinal)) sc = ps[i].Substring("storyCode=".Length);
                         else if (ps[i].StartsWith("mixingCode=", StringComparison.Ordinal)) mc = ps[i].Substring("mixingCode=".Length);
+                        else if (ps[i].StartsWith("stories=", StringComparison.Ordinal)) stCsv = ps[i].Substring("stories=".Length);
                     }
+                    _otherCode = oc;
                     _storyCode = sc;
                     _mixingCode = mc;
-                    _lblSearchStatus.Text = string.Format("已同步游戏设置：故事={0} · 混搭={1}（预览与高级筛选将自动应用）",
-                        string.IsNullOrEmpty(sc) ? "0" : sc, string.IsNullOrEmpty(mc) ? "0" : mc);
+                    _storyIdsCsv = stCsv;
+
+                    string curTpl = _txtTemplateCoord != null ? _txtTemplateCoord.Text.Trim() : "";
+                    if (_txtTemplateCoord != null && (string.IsNullOrEmpty(curTpl) || _templateAutoSynced))
+                    {
+                        string oNorm = string.IsNullOrEmpty(oc) ? "0" : oc;
+                        string sNorm = string.IsNullOrEmpty(sc) ? "0" : sc;
+                        string mNorm = string.IsNullOrEmpty(mc) ? "0" : mc;
+                        string nextSuffix = (oNorm == "0" && sNorm == "0" && mNorm == "0")
+                            ? ""
+                            : (oNorm + "-" + sNorm + "-" + mNorm);
+                        _suppressEvents = true;
+                        _txtTemplateCoord.Text = nextSuffix;
+                        _suppressEvents = false;
+                        _templateAutoSynced = true;
+                    }
+
+                    _lblSearchStatus.Text = string.Format("已同步游戏设置：难度={0} · 故事={1} · 混搭={2}（预览与高级筛选将自动应用）",
+                        string.IsNullOrEmpty(oc) ? "0" : oc,
+                        string.IsNullOrEmpty(sc) ? "0" : sc,
+                        string.IsNullOrEmpty(mc) ? "0" : mc);
                     _lblSearchStatus.ForeColor = C(ACC);
                 });
             });
@@ -1769,6 +2254,112 @@ namespace ONITrainer
             if (openPreview) OpenMapPreview();
         }
 
+        void TriggerCommunityAutoPull()
+        {
+            if (_btnCommunity != null) _btnCommunity.Text = "社区库";
+            CommunitySeedDb.TryAutoPullBackground((res) =>
+            {
+                if (res != null && res.Success && res.UpdatedClusters > 0)
+                {
+                    SetUi(() =>
+                    {
+                        if (_lblSearchStatus != null && string.IsNullOrEmpty(_txtCoord.Text))
+                        {
+                            _lblSearchStatus.Text = string.Format("社区种子库已自动增量同步（共 {0} 条种子）", res.TotalSeeds);
+                            _lblSearchStatus.ForeColor = C(ACC);
+                        }
+                    });
+                }
+            });
+        }
+
+        void OpenCommunityDbDialog()
+        {
+            if (_communityForm != null && !_communityForm.IsDisposed)
+            {
+                _communityForm.Activate();
+                return;
+            }
+            List<PlanetConstraint> cons = new List<PlanetConstraint>(_constraints.Values);
+            bool hasTrait = false;
+            for (int i = 0; i < cons.Count; i++)
+            {
+                if (cons[i].RequiredMask != 0 || cons[i].ForbiddenMask != 0 || cons[i].RequireNoTraits)
+                {
+                    hasTrait = true;
+                    break;
+                }
+            }
+
+            Dictionary<int, List<PoiFilterRule>> grouped = new Dictionary<int, List<PoiFilterRule>>();
+            for (int i = 0; i < _poiRules.Count; i++)
+            {
+                BoundPoiRule br = _poiRules[i];
+                List<PoiFilterRule> rl;
+                if (!grouped.TryGetValue(br.PlacementIndex, out rl))
+                {
+                    rl = new List<PoiFilterRule>();
+                    grouped[br.PlacementIndex] = rl;
+                }
+                rl.Add(br.Rule);
+            }
+
+            Func<SeedRecord> getCurRec = () =>
+            {
+                int activeSeed;
+                if (_curCluster == null || !TryGetActiveSeed(out activeSeed)) return null;
+                Dictionary<int, MapPreviewData> mapsSnap = (_previewCacheSeed == activeSeed && _previewCache.Count > 0)
+                    ? _previewCache : null;
+                SeedRecord sr = BuildCurrentSeedRecord(_curCluster, _lastResult, mapsSnap, activeSeed);
+                sr.Seed = activeSeed;
+                string tpl = string.IsNullOrEmpty(_txtTemplateCoord.Text) ? _txtCoord.Text : _txtTemplateCoord.Text;
+                sr.Coordinate = SeedSearcher.FormatCoordinate(_curCluster.CoordinatePrefix, activeSeed, tpl);
+                return sr;
+            };
+
+            Func<Dictionary<int, MapPreviewData>> getCurMaps = () =>
+            {
+                int activeSeed;
+                if (!TryGetActiveSeed(out activeSeed)) return null;
+                return (_previewCacheSeed == activeSeed && _previewCache.Count > 0) ? _previewCache : null;
+            };
+
+            _communityForm = new CommunitySeedForm(
+                _catalog,
+                _curCluster,
+                cons,
+                hasTrait,
+                grouped,
+                ApplySavedSeedRecord,
+                getCurRec,
+                getCurMaps,
+                _getBridge,
+                _gameDir,
+                GetActiveDlcCsv(),
+                _storyIdsCsv,
+                _mixingCode);
+            _communityForm.Show(this);
+        }
+
+        void RefreshUploadPendingBadge()
+        {
+            if (_btnSubmitSeed == null) return;
+            int pend = CommunitySeedDb.GetPendingUploadCount();
+            _btnSubmitSeed.Text = "上传记录(" + pend.ToString(CultureInfo.InvariantCulture) + ")";
+            _btnSubmitSeed.Enabled = true;
+            _btnSubmitSeed.ForeColor = pend > 0 ? C(WARN) : C(TXT);
+        }
+
+        void OpenSubmitSeedDialog()
+        {
+            CommunitySeedDb.FlushPendingToDisk();
+            using (BatchUploadSeedsDialog dlg = new BatchUploadSeedsDialog())
+            {
+                dlg.ShowDialog(this);
+            }
+            RefreshUploadPendingBadge();
+        }
+
         void OnGlobalAdvancedModeChanged()
         {
             SetUi(ApplyAdvancedModeLayout);
@@ -1790,6 +2381,47 @@ namespace ONITrainer
             MinimumSize = nextFull;
             MaximumSize = nextFull;
             ClientSize = new Size(ClientSize.Width, targetH);
+        }
+
+        sealed class WorkerCountChoice
+        {
+            public int Value;
+            public string Label;
+            public override string ToString() { return Label; }
+        }
+
+        void PopulateWorkersCombo()
+        {
+            if (_cboWorkers == null) return;
+            _suppressEvents = true;
+            _cboWorkers.Items.Clear();
+            int cur = TrainerSettings.ParallelWorkers;
+            int autoCnt = Math.Max(2, Math.Min(6, Environment.ProcessorCount / 2));
+            WorkerCountChoice[] choices = new WorkerCountChoice[]
+            {
+                new WorkerCountChoice { Value = -1, Label = string.Format("自动推荐 ({0} 进程)", autoCnt) },
+                new WorkerCountChoice { Value = 1,  Label = "1 进程（低占用）" },
+                new WorkerCountChoice { Value = 2,  Label = "2 进程" },
+                new WorkerCountChoice { Value = 4,  Label = "4 进程" },
+                new WorkerCountChoice { Value = 6,  Label = "6 进程" },
+                new WorkerCountChoice { Value = 8,  Label = "8 进程" },
+                new WorkerCountChoice { Value = 12, Label = "12 进程" },
+                new WorkerCountChoice { Value = 0,  Label = "0（仅用游戏内筛选）" }
+            };
+            int sel = 0;
+            for (int i = 0; i < choices.Length; i++)
+            {
+                _cboWorkers.Items.Add(choices[i]);
+                if (choices[i].Value == cur) sel = i;
+            }
+            if (_cboWorkers.Items.Count > 0) _cboWorkers.SelectedIndex = sel;
+            _cboWorkers.SelectedIndexChanged += (s, e) =>
+            {
+                if (_suppressEvents) return;
+                WorkerCountChoice wc = _cboWorkers.SelectedItem as WorkerCountChoice;
+                if (wc != null) TrainerSettings.SetParallelWorkers(wc.Value);
+            };
+            _suppressEvents = false;
         }
 
         sealed class PoiPlanetChoice
@@ -2015,6 +2647,8 @@ namespace ONITrainer
                     _previewCacheSeed = seed;
                 }
                 _previewCache[md.WorldIndex] = md;
+                CommunitySeedDb.RecordScreenedMap(
+                    md, clusterSnap, GetActiveDlcCsv(), _storyCode, _mixingCode, _txtTemplateCoord.Text, _catalog, true);
                 if (string.IsNullOrEmpty(_txtPreview.Text.Trim()) || _lastResult == null || _lastResult.Seed != seed)
                 {
                     SeedRecord sr = BuildCurrentSeedRecord(clusterSnap, null, _previewCache, seed);
@@ -2039,6 +2673,8 @@ namespace ONITrainer
                 GetActiveDlcCsv(),
                 sArg,
                 _mixingCode,
+                _gameDir,
+                _storyIdsCsv,
                 _getBridge,
                 cache,
                 initWorldIdx,
@@ -2052,8 +2688,13 @@ namespace ONITrainer
             _closing = true;
             if (_advChangedHandler != null)
                 TrainerSettings.AdvancedModeChanged -= _advChangedHandler;
+            if (_seedDbStateHandler != null)
+                CommunitySeedDb.StateChanged -= _seedDbStateHandler;
+            CommunitySeedDb.FlushPendingToDisk();
             if (_historyForm != null && !_historyForm.IsDisposed)
                 try { _historyForm.Close(); } catch { }
+            if (_communityForm != null && !_communityForm.IsDisposed)
+                try { _communityForm.Close(); } catch { }
             if (_mapPreviewForm != null && !_mapPreviewForm.IsDisposed)
                 try { _mapPreviewForm.Close(); } catch { }
             StopSearch();

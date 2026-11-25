@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
+using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -23,6 +24,8 @@ namespace ONITrainer
         readonly string _activeDlcCsv;
         readonly string _storyArg;
         readonly string _mixingCode;
+        readonly string _gameDir;
+        readonly string _storyIdsCsv;
         readonly Func<BridgePreviewState> _getBridge;
         readonly List<WorldPlacementDef> _orderedPlacements;
         readonly Dictionary<int, MapPreviewData> _sharedCache;
@@ -48,6 +51,22 @@ namespace ONITrainer
             Func<BridgePreviewState> getBridge,
             Dictionary<int, MapPreviewData> sharedCache,
             Action<int> onSelectPlanet)
+            : this(cluster, seed, coordinate, activeDlcCsv, storyArg, mixingCode, "", "", getBridge, sharedCache, onSelectPlanet)
+        {
+        }
+
+        public ClusterOverviewForm(
+            ClusterDef cluster,
+            int seed,
+            string coordinate,
+            string activeDlcCsv,
+            string storyArg,
+            string mixingCode,
+            string gameDir,
+            string storyIdsCsv,
+            Func<BridgePreviewState> getBridge,
+            Dictionary<int, MapPreviewData> sharedCache,
+            Action<int> onSelectPlanet)
         {
             _cluster = cluster;
             _seed = seed;
@@ -55,6 +74,8 @@ namespace ONITrainer
             _activeDlcCsv = activeDlcCsv ?? "";
             _storyArg = storyArg ?? "";
             _mixingCode = mixingCode ?? "";
+            _gameDir = string.IsNullOrEmpty(gameDir) ? (GameInstallationDetector.DetectGameDir() ?? "") : gameDir;
+            _storyIdsCsv = storyIdsCsv ?? "";
             _getBridge = getBridge;
             _sharedCache = sharedCache ?? new Dictionary<int, MapPreviewData>();
             _onSelectPlanet = onSelectPlanet;
@@ -264,6 +285,19 @@ namespace ONITrainer
             _scanThread.Start();
         }
 
+        MapPreviewData GeneratePlanetSafe(int worldIndex, out string err)
+        {
+            BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+            if (st != null && st.Bridge != null && !st.InSave)
+            {
+                return st.Bridge.GenerateMapPreview(
+                    _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+            }
+            string hStory = string.IsNullOrEmpty(_storyIdsCsv) ? _storyArg : _storyIdsCsv;
+            return HeadlessPreviewHost.GeneratePreview(
+                _gameDir, _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, hStory, _mixingCode, false, st, out err);
+        }
+
         void ExportAllCombinedPng()
         {
             if (_exportingAll) return;
@@ -291,16 +325,19 @@ namespace ONITrainer
             }
 
             BridgePreviewState initialState = _getBridge != null ? _getBridge() : null;
-            bool hasBridge = (initialState != null && initialState.Bridge != null);
-            if (missing > 0 && !hasBridge)
+            bool useMainMenuBridge = (initialState != null && initialState.Bridge != null && !initialState.InSave);
+            bool hasHeadless = string.IsNullOrEmpty(_mixingCode) &&
+                !string.IsNullOrEmpty(_gameDir) &&
+                GameInstallationDetector.IsValidGameDir(_gameDir);
+            if (missing > 0 && !useMainMenuBridge && !hasHeadless)
             {
                 if (cachedCount == 0)
                 {
-                    MessageBox.Show(this, "当前未连接游戏且尚无缓存，请先启动《缺氧》游戏再导出全部地图。", "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, "当前未定位到《缺氧》游戏目录且尚无缓存，请先设置有效游戏目录或启动游戏再导出全部地图。", "无法生成地图", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 DialogResult dr = MessageBox.Show(this,
-                    string.Format("当前未连接游戏，尚有 {0} 颗小行星未扫描。\r\n是否仅将已完成的 {1} 颗小行星合并导出为大图？", missing, cachedCount),
+                    string.Format("当前无法生成其余 {0} 颗小行星，是否仅将已完成的 {1} 颗小行星合并导出为大图？", missing, cachedCount),
                     "导出确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (dr != DialogResult.Yes) return;
             }
@@ -337,9 +374,6 @@ namespace ONITrainer
 
                             if (data == null)
                             {
-                                BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                                if (st == null || st.Bridge == null) { lastErr = "游戏连接已断开"; break; }
-
                                 SetUi(() =>
                                 {
                                     if (rowIdx < _lv.Items.Count) _lv.Items[rowIdx].SubItems[3].Text = "生成中…";
@@ -352,8 +386,7 @@ namespace ONITrainer
                                 for (int attempt = 0; attempt < 3; attempt++)
                                 {
                                     if (_closing || _stopReq) break;
-                                    data = st.Bridge.GenerateMapPreview(
-                                        _cluster.FilePath, _seed, wp.PlacementIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                                    data = GeneratePlanetSafe(wp.PlacementIndex, out err);
                                     if (data != null) break;
                                     if (err == null || err.IndexOf("busy", StringComparison.OrdinalIgnoreCase) < 0) break;
                                     Thread.Sleep(450);
@@ -499,16 +532,8 @@ namespace ONITrainer
                         _lblStatus.ForeColor = C(WARN);
                     });
 
-                    BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                    if (st == null || st.Bridge == null)
-                    {
-                        errStop = "未连接游戏，扫描已暂停。";
-                        break;
-                    }
-
                     string err;
-                    data = st.Bridge.GenerateMapPreview(
-                        _cluster.FilePath, _seed, wp.PlacementIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                    data = GeneratePlanetSafe(wp.PlacementIndex, out err);
                     if (data == null)
                     {
                         SetUi(() =>

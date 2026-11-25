@@ -1138,7 +1138,7 @@ namespace ONITrainer
             }
         }
 
-        sealed class CompiledRule
+        internal sealed class CompiledRule
         {
             public int Min;
             public int Max;
@@ -1146,7 +1146,7 @@ namespace ONITrainer
             public int[] CandIdx;
         }
 
-        sealed class CompiledWorldCheck
+        internal sealed class CompiledWorldCheck
         {
             public int PlacementIndex;
             public bool DisableTraits;
@@ -1176,6 +1176,8 @@ namespace ONITrainer
                 Match m = Regex.Match(trimmed, @"^.+?-\d+-(.+)$");
                 if (m.Success && m.Groups[1].Value.Length > 0)
                     return pfx + "-" + sSeed + "-" + m.Groups[1].Value;
+                if (Regex.IsMatch(trimmed, @"^[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+$"))
+                    return pfx + "-" + sSeed + "-" + trimmed;
             }
             return pfx + "-" + sSeed + "-0-0-0";
         }
@@ -1307,7 +1309,7 @@ namespace ONITrainer
             return true;
         }
 
-        static CompiledWorldCheck[] CompileChecks(WorldGenCatalog cat, ClusterDef cluster, List<PlanetConstraint> constraints)
+        internal static CompiledWorldCheck[] CompileChecks(WorldGenCatalog cat, ClusterDef cluster, List<PlanetConstraint> constraints)
         {
             List<CompiledWorldCheck> list = new List<CompiledWorldCheck>();
             for (int c = 0; c < constraints.Count; c++)
@@ -1368,7 +1370,7 @@ namespace ONITrainer
             return list.ToArray();
         }
 
-        static bool MatchesWorldFast(
+        internal static bool MatchesWorldFast(
             CompiledWorldCheck ck,
             int worldSeed,
             KRandomFast rng,
@@ -1582,6 +1584,159 @@ namespace ONITrainer
         static int VolatileReadInt(ref int location)
         {
             return Thread.VolatileRead(ref location);
+        }
+    }
+
+    public sealed class CandidateSeedProducer : IDisposable
+    {
+        readonly SeedSearcher.CompiledWorldCheck[] _checks;
+        readonly int _traitCount;
+        readonly ulong[] _traitExWith;
+        readonly ulong[] _traitExTags;
+        readonly int _startSeed;
+        readonly SearchControl _ctrl;
+        readonly Queue<int> _queue = new Queue<int>();
+        readonly object _qLock = new object();
+        readonly Thread[] _workers;
+        long _cursorOffset = -16384;
+        int _activeWorkers;
+        volatile bool _stop;
+        const int MaxBuffered = 64;
+        const int BatchSize = 16384;
+
+        public CandidateSeedProducer(
+            WorldGenCatalog cat,
+            ClusterDef cluster,
+            List<PlanetConstraint> constraints,
+            int startSeed,
+            SearchControl ctrl)
+        {
+            _checks = SeedSearcher.CompileChecks(cat, cluster, constraints);
+            _traitCount = cat.ActiveTraits.Count;
+            _traitExWith = new ulong[_traitCount];
+            _traitExTags = new ulong[_traitCount];
+            for (int i = 0; i < _traitCount; i++)
+            {
+                _traitExWith[i] = cat.ActiveTraits[i].ExWithMask;
+                _traitExTags[i] = cat.ActiveTraits[i].ExTagMask;
+            }
+            if (startSeed < 1 || startSeed > SeedSearcher.MaxSearchSeed) startSeed = 1;
+            _startSeed = startSeed;
+            _ctrl = ctrl ?? new SearchControl();
+
+
+            int workerCount = Math.Max(1, Math.Min(4, Math.Max(1, Environment.ProcessorCount / 2)));
+            _activeWorkers = workerCount;
+            _workers = new Thread[workerCount];
+            for (int w = 0; w < workerCount; w++)
+            {
+                _workers[w] = new Thread(WorkerLoop);
+                _workers[w].IsBackground = true;
+                _workers[w].Start();
+            }
+        }
+
+        public bool IsExhausted
+        {
+            get
+            {
+                lock (_qLock)
+                {
+                    return _activeWorkers == 0 && _queue.Count == 0;
+                }
+            }
+        }
+
+        void WorkerLoop()
+        {
+            try
+            {
+                SeedSearcher.KRandomFast rng = new SeedSearcher.KRandomFast();
+                bool[] inPool = new bool[_traitCount];
+                int[] cands = new int[_traitCount];
+                int totalRange = SeedSearcher.MaxSearchSeed;
+
+                while (!_stop && !_ctrl.Stop)
+                {
+                    long batchStart = Interlocked.Add(ref _cursorOffset, BatchSize);
+                    if (batchStart >= totalRange) break;
+                    int count = (int)Math.Min(BatchSize, totalRange - batchStart);
+
+                    int flushed = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (_stop || _ctrl.Stop) break;
+                        long off = batchStart + i;
+                        int seed = (int)(((long)(_startSeed - 1) + off) % SeedSearcher.MaxSearchSeed) + 1;
+
+                        bool ok = true;
+                        for (int c = 0; c < _checks.Length; c++)
+                        {
+                            SeedSearcher.CompiledWorldCheck ck = _checks[c];
+                            if (!SeedSearcher.MatchesWorldFast(ck, seed + ck.PlacementIndex, rng, _traitExWith, _traitExTags, _traitCount, inPool, cands))
+                            {
+                                ok = false;
+                                break;
+                            }
+                        }
+
+                        flushed++;
+                        if (ok)
+                        {
+                            Interlocked.Add(ref _ctrl.Tested, flushed);
+                            flushed = 0;
+                            lock (_qLock)
+                            {
+                                while (!_stop && !_ctrl.Stop && _queue.Count >= MaxBuffered)
+                                    Monitor.Wait(_qLock, 50);
+                                if (_stop || _ctrl.Stop) break;
+                                _queue.Enqueue(seed);
+                                Monitor.PulseAll(_qLock);
+                            }
+                        }
+                    }
+                    if (flushed > 0) Interlocked.Add(ref _ctrl.Tested, flushed);
+                }
+            }
+            catch { }
+            finally
+            {
+                lock (_qLock)
+                {
+                    _activeWorkers--;
+                    Monitor.PulseAll(_qLock);
+                }
+            }
+        }
+
+        public int TakeBatch(int[] dst, int maxCount, int timeoutMs)
+        {
+            if (dst == null || dst.Length == 0 || maxCount <= 0) return 0;
+            int cap = Math.Min(maxCount, dst.Length);
+            int deadline = Environment.TickCount + Math.Max(0, timeoutMs);
+
+            lock (_qLock)
+            {
+                while (_queue.Count == 0 && _activeWorkers > 0 && !_stop && !_ctrl.Stop)
+                {
+                    int rem = deadline - Environment.TickCount;
+                    if (rem <= 0) break;
+                    Monitor.Wait(_qLock, Math.Min(rem, 50));
+                }
+                int n = 0;
+                while (n < cap && _queue.Count > 0)
+                    dst[n++] = _queue.Dequeue();
+                if (n > 0) Monitor.PulseAll(_qLock);
+                return n;
+            }
+        }
+
+        public void Dispose()
+        {
+            _stop = true;
+            lock (_qLock) { Monitor.PulseAll(_qLock); }
+            for (int i = 0; i < _workers.Length; i++)
+                try { _workers[i].Join(400); } catch { }
         }
     }
 }

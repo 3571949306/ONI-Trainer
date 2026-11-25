@@ -25,6 +25,8 @@ namespace ONITrainer
         readonly string _activeDlcCsv;
         readonly string _storyArg;
         readonly string _mixingCode;
+        readonly string _gameDir;
+        readonly string _storyIdsCsv;
         readonly Func<BridgePreviewState> _getBridge;
         readonly Action<MapPreviewData> _onPreviewReady;
         readonly Func<SeedRecord> _buildSeedRecord;
@@ -93,6 +95,24 @@ namespace ONITrainer
             int initialWorldIndex,
             Action<MapPreviewData> onPreviewReady,
             Func<SeedRecord> buildSeedRecord)
+            : this(cluster, seed, coordinate, activeDlcCsv, storyArg, mixingCode, "", "", getBridge, initialCache, initialWorldIndex, onPreviewReady, buildSeedRecord)
+        {
+        }
+
+        public MapPreviewForm(
+            ClusterDef cluster,
+            int seed,
+            string coordinate,
+            string activeDlcCsv,
+            string storyArg,
+            string mixingCode,
+            string gameDir,
+            string storyIdsCsv,
+            Func<BridgePreviewState> getBridge,
+            Dictionary<int, MapPreviewData> initialCache,
+            int initialWorldIndex,
+            Action<MapPreviewData> onPreviewReady,
+            Func<SeedRecord> buildSeedRecord)
         {
             _cluster = cluster;
             _seed = seed;
@@ -100,6 +120,8 @@ namespace ONITrainer
             _activeDlcCsv = activeDlcCsv ?? "";
             _storyArg = storyArg ?? "";
             _mixingCode = mixingCode ?? "";
+            _gameDir = gameDir ?? "";
+            _storyIdsCsv = storyIdsCsv ?? "";
             _getBridge = getBridge;
             _onPreviewReady = onPreviewReady;
             _buildSeedRecord = buildSeedRecord;
@@ -562,28 +584,31 @@ namespace ONITrainer
             }
 
             int mySeq = Interlocked.Increment(ref _loadGenSeq);
-            ShowOverlay("正在生成「" + (pc.Placement.World != null ? pc.Placement.World.DisplayName : pc.Placement.WorldId) + "」地图，请稍候…", false, false);
+            BridgePreviewState initSt = _getBridge != null ? _getBridge() : null;
+            bool willUseHeadless = (initSt == null || initSt.Bridge == null || initSt.InSave);
+            ShowOverlay(
+                (willUseHeadless ? "正在生成「" : "正在生成「") +
+                (pc.Placement.World != null ? pc.Placement.World.DisplayName : pc.Placement.WorldId) + "」地图，请稍候…",
+                false, false);
             _lblMeta.Text = "生成中…";
             _lblMeta.ForeColor = C(WARN);
 
             Thread t = new Thread(() =>
             {
                 BridgePreviewState state = _getBridge != null ? _getBridge() : null;
-                if (state == null || state.Bridge == null)
-                {
-                    SetUi(() =>
-                    {
-                        if (mySeq != _loadGenSeq) return;
-                        ShowOverlay("请先启动《缺氧》游戏（主菜单或存档内均可）\r\n修改器连接游戏后点击「重试生成」。", true, true);
-                        _lblMeta.Text = "未连接游戏";
-                        _lblMeta.ForeColor = C(WARN);
-                    });
-                    return;
-                }
-
                 string err;
-                MapPreviewData data = state.Bridge.GenerateMapPreview(
-                    _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                MapPreviewData data;
+                if (state != null && state.Bridge != null && !state.InSave)
+                {
+                    data = state.Bridge.GenerateMapPreview(
+                        _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                }
+                else
+                {
+                    string hStory = string.IsNullOrEmpty(_storyIdsCsv) ? _storyArg : _storyIdsCsv;
+                    data = HeadlessPreviewHost.GeneratePreview(
+                        _gameDir, _cluster.FilePath, _seed, worldIndex, _activeDlcCsv, hStory, _mixingCode, false, state, out err);
+                }
 
                 if (data != null && SeedStore.IsFavorite(_coordinate, _seed))
                     SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, data);
@@ -615,7 +640,7 @@ namespace ONITrainer
                 return;
             }
             _overviewForm = new ClusterOverviewForm(
-                _cluster, _seed, _coordinate, _activeDlcCsv, _storyArg, _mixingCode,
+                _cluster, _seed, _coordinate, _activeDlcCsv, _storyArg, _mixingCode, _gameDir, _storyIdsCsv,
                 _getBridge, _cache, SelectPlanetIndex);
             _overviewForm.Show(this);
         }
@@ -985,18 +1010,27 @@ namespace ONITrainer
             }
 
             BridgePreviewState initialState = _getBridge != null ? _getBridge() : null;
-            bool hasBridge = (initialState != null && initialState.Bridge != null);
-            if (missingIndices.Count > 0 && !hasBridge)
+            bool useMainMenuBridge = (initialState != null && initialState.Bridge != null && !initialState.InSave);
+            string resolvedGameDir = _gameDir;
+            if (string.IsNullOrEmpty(resolvedGameDir) || !GameInstallationDetector.IsValidGameDir(resolvedGameDir))
+                resolvedGameDir = GameInstallationDetector.DetectGameDir();
+            bool hasHeadless = !useMainMenuBridge &&
+                !string.IsNullOrEmpty(resolvedGameDir) &&
+                GameInstallationDetector.IsValidGameDir(resolvedGameDir) &&
+                (string.IsNullOrEmpty(_mixingCode) || string.Equals(_mixingCode.Trim(), "0", StringComparison.Ordinal));
+
+            if (missingIndices.Count > 0 && !useMainMenuBridge && !hasHeadless)
             {
                 if (cachedCount == 0)
                 {
-                    MessageBox.Show(this,
-                        "当前未连接《缺氧》游戏且无离线缓存。\r\n请先启动游戏再点击「导出全星群」。",
-                        "需要游戏连接", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    string reason = (!string.IsNullOrEmpty(_mixingCode) && !string.Equals(_mixingCode.Trim(), "0", StringComparison.Ordinal))
+                        ? "当前配置包含自定义 DLC 混搭设置（" + _mixingCode + "），为避免存档闪退请返回游戏主菜单后再导出全星群。"
+                        : "未识别到有效的《缺氧》游戏目录且未处于主菜单，无法扫描缺失小行星。";
+                    MessageBox.Show(this, reason, "无法扫描全星群", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 DialogResult dr = MessageBox.Show(this,
-                    string.Format("当前未连接游戏，尚有 {0} 颗小行星未生成。\r\n是否仅将已缓存的 {1} 颗小行星合并导出为大图？",
+                    string.Format("尚有 {0} 颗小行星无法离线/存档内扫描，是否仅将已缓存的 {1} 颗小行星合并导出？",
                         missingIndices.Count, cachedCount),
                     "导出全星群确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (dr != DialogResult.Yes) return;
@@ -1039,91 +1073,171 @@ namespace ONITrainer
 
                 Thread t = new Thread(() =>
                 {
-                    int doneCount = 0;
+                    int doneCount = cachedCount;
                     int failedCount = 0;
                     string lastErr = null;
                     try
                     {
-                        for (int i = 0; i < _orderedPlacements.Count; i++)
+                        if (!useMainMenuBridge && hasHeadless && missingIndices.Count > 0)
                         {
-                            if (_closing || _cancelExportAll) break;
-                            WorldPlacementDef wp = _orderedPlacements[i];
-                            int pi = wp.PlacementIndex;
-                            MapPreviewData existing;
-                            lock (_cache) { _cache.TryGetValue(pi, out existing); }
-                            if (existing != null)
+                            int nWorkers = Math.Min(missingIndices.Count,
+                                Math.Max(1, Math.Min(4, TrainerSettings.EffectiveWorkerCount == 0 ? 2 : TrainerSettings.EffectiveWorkerCount)));
+                            string catPath = WorldGenWorkerPool.PrepareCatalogFile(initialState);
+                            string hStory = string.IsNullOrEmpty(_storyIdsCsv) ? _storyArg : _storyIdsCsv;
+                            using (WorldGenWorkerPool wpool = new WorldGenWorkerPool(resolvedGameDir, _activeDlcCsv, nWorkers, catPath))
                             {
-                                doneCount++;
-                                int dc = doneCount;
-                                SetUi(() =>
+                                string initErr;
+                                if (!wpool.Initialize(out initErr))
                                 {
-                                    if (_pbExportAll != null) _pbExportAll.Value = Math.Min(_pbExportAll.Maximum, dc);
-                                });
-                                continue;
+                                    lastErr = initErr;
+                                }
+                                else
+                                {
+                                    int nextCursor = 0;
+                                    int wCnt = Math.Max(1, wpool.ActiveWorkerCount);
+                                    Thread[] wts = new Thread[wCnt];
+                                    for (int wi = 0; wi < wCnt; wi++)
+                                    {
+                                        int slot = wi;
+                                        wts[wi] = new Thread(() =>
+                                        {
+                                            while (!_closing && !_cancelExportAll)
+                                            {
+                                                int idxPos = Interlocked.Increment(ref nextCursor) - 1;
+                                                if (idxPos >= missingIndices.Count) break;
+                                                int pi = missingIndices[idxPos];
+                                                WorldPlacementDef wp = null;
+                                                for (int k = 0; k < _orderedPlacements.Count; k++)
+                                                    if (_orderedPlacements[k].PlacementIndex == pi) { wp = _orderedPlacements[k]; break; }
+                                                string wname = wp != null && wp.World != null ? wp.World.DisplayName : ("行星 #" + pi);
+                                                SetUi(() =>
+                                                {
+                                                    if (_lblExportAll != null)
+                                                    {
+                                                        _lblExportAll.Text = string.Format("正在多进程并行扫描全星群 ({0}/{1})：{2}…", doneCount, totalCount, wname);
+                                                        _lblExportAll.ForeColor = C(WARN);
+                                                    }
+                                                });
+                                                string wErr;
+                                                MapPreviewData gen = wpool.RunPreviewCommand(
+                                                    _cluster != null ? _cluster.FilePath : "", _seed, pi, _activeDlcCsv, hStory, false, slot, out wErr);
+                                                if (_closing || _cancelExportAll) break;
+                                                if (gen != null)
+                                                {
+                                                    int dc = Interlocked.Increment(ref doneCount);
+                                                    lock (_cache) { _cache[pi] = gen; }
+                                                    if (SeedStore.IsFavorite(_coordinate, _seed))
+                                                        SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, gen);
+                                                    MapPreviewData cap = gen;
+                                                    SetUi(() =>
+                                                    {
+                                                        if (_pbExportAll != null) _pbExportAll.Value = Math.Min(_pbExportAll.Maximum, dc);
+                                                        if (_lblExportAll != null)
+                                                            _lblExportAll.Text = string.Format("正在多进程并行扫描全星群（已完成 {0}/{1}）…", dc, totalCount);
+                                                        if (_curData == null && pi == curSelWorldIdx) ShowPreviewData(cap);
+                                                        if (_onPreviewReady != null) _onPreviewReady(cap);
+                                                    });
+                                                }
+                                                else
+                                                {
+                                                    Interlocked.Increment(ref failedCount);
+                                                    if (!string.IsNullOrEmpty(wErr)) lastErr = wErr;
+                                                }
+                                            }
+                                        });
+                                        wts[wi].IsBackground = true;
+                                        wts[wi].Start();
+                                    }
+                                    for (int wi = 0; wi < wCnt; wi++) wts[wi].Join();
+                                }
                             }
-
-                            BridgePreviewState st = _getBridge != null ? _getBridge() : null;
-                            if (st == null || st.Bridge == null)
-                            {
-                                lastErr = "游戏连接已断开";
-                                break;
-                            }
-
-                            string wname = wp.World != null ? wp.World.DisplayName : wp.WorldId;
-                            int idx1 = i + 1;
-                            SetUi(() =>
-                            {
-                                if (_lblExportAll != null)
-                                {
-                                    _lblExportAll.Text = string.Format("正在后台自动扫描 ({0}/{1})：{2}…", idx1, _orderedPlacements.Count, wname);
-                                    _lblExportAll.ForeColor = C(WARN);
-                                }
-                                if (_lblMeta != null)
-                                {
-                                    _lblMeta.Text = string.Format("扫描全星群 ({0}/{1})：{2}…", idx1, _orderedPlacements.Count, wname);
-                                    _lblMeta.ForeColor = C(WARN);
-                                }
-                                if (_lblHover != null)
-                                {
-                                    _lblHover.Text = string.Format("正在后台扫描全星群 ({0}/{1})：{2}（完成后自动保存大图）…", idx1, _orderedPlacements.Count, wname);
-                                    _lblHover.ForeColor = C(WARN);
-                                }
-                            });
-
-                            string err = null;
-                            MapPreviewData generated = null;
-                            for (int attempt = 0; attempt < 3; attempt++)
+                        }
+                        else
+                        {
+                            doneCount = 0;
+                            for (int i = 0; i < _orderedPlacements.Count; i++)
                             {
                                 if (_closing || _cancelExportAll) break;
-                                generated = st.Bridge.GenerateMapPreview(
-                                    _cluster != null ? _cluster.FilePath : "",
-                                    _seed, pi, _activeDlcCsv, _storyArg, _mixingCode, out err);
-                                if (generated != null) break;
-                                if (err == null || err.IndexOf("busy", StringComparison.OrdinalIgnoreCase) < 0) break;
-                                Thread.Sleep(450);
-                            }
+                                WorldPlacementDef wp = _orderedPlacements[i];
+                                int pi = wp.PlacementIndex;
+                                MapPreviewData existing;
+                                lock (_cache) { _cache.TryGetValue(pi, out existing); }
+                                if (existing != null)
+                                {
+                                    doneCount++;
+                                    int dc = doneCount;
+                                    SetUi(() =>
+                                    {
+                                        if (_pbExportAll != null) _pbExportAll.Value = Math.Min(_pbExportAll.Maximum, dc);
+                                    });
+                                    continue;
+                                }
 
-                            if (_closing || _cancelExportAll) break;
+                                BridgePreviewState st = _getBridge != null ? _getBridge() : null;
+                                if (st == null || st.Bridge == null || st.InSave)
+                                {
+                                    lastErr = st != null && st.InSave
+                                        ? "游戏已进入存档，为避免闪退已停止扫描，请返回主菜单后重试。"
+                                        : "游戏连接已断开";
+                                    break;
+                                }
 
-                            if (generated != null)
-                            {
-                                doneCount++;
-                                lock (_cache) { _cache[pi] = generated; }
-                                if (SeedStore.IsFavorite(_coordinate, _seed))
-                                    SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, generated);
-                                MapPreviewData cap = generated;
-                                int dc = doneCount;
+                                string wname = wp.World != null ? wp.World.DisplayName : wp.WorldId;
+                                int idx1 = i + 1;
                                 SetUi(() =>
                                 {
-                                    if (_pbExportAll != null) _pbExportAll.Value = Math.Min(_pbExportAll.Maximum, dc);
-                                    if (_curData == null && pi == curSelWorldIdx) ShowPreviewData(cap);
-                                    if (_onPreviewReady != null) _onPreviewReady(cap);
+                                    if (_lblExportAll != null)
+                                    {
+                                        _lblExportAll.Text = string.Format("正在后台自动扫描 ({0}/{1})：{2}…", idx1, _orderedPlacements.Count, wname);
+                                        _lblExportAll.ForeColor = C(WARN);
+                                    }
+                                    if (_lblMeta != null)
+                                    {
+                                        _lblMeta.Text = string.Format("扫描全星群 ({0}/{1})：{2}…", idx1, _orderedPlacements.Count, wname);
+                                        _lblMeta.ForeColor = C(WARN);
+                                    }
+                                    if (_lblHover != null)
+                                    {
+                                        _lblHover.Text = string.Format("正在后台扫描全星群 ({0}/{1})：{2}（完成后自动保存大图）…", idx1, _orderedPlacements.Count, wname);
+                                        _lblHover.ForeColor = C(WARN);
+                                    }
                                 });
-                            }
-                            else
-                            {
-                                failedCount++;
-                                if (!string.IsNullOrEmpty(err)) lastErr = err;
+
+                                string err = null;
+                                MapPreviewData generated = null;
+                                for (int attempt = 0; attempt < 3; attempt++)
+                                {
+                                    if (_closing || _cancelExportAll) break;
+                                    generated = st.Bridge.GenerateMapPreview(
+                                        _cluster != null ? _cluster.FilePath : "",
+                                        _seed, pi, _activeDlcCsv, _storyArg, _mixingCode, out err);
+                                    if (generated != null) break;
+                                    if (err == null || err.IndexOf("busy", StringComparison.OrdinalIgnoreCase) < 0) break;
+                                    Thread.Sleep(450);
+                                }
+
+                                if (_closing || _cancelExportAll) break;
+
+                                if (generated != null)
+                                {
+                                    doneCount++;
+                                    lock (_cache) { _cache[pi] = generated; }
+                                    if (SeedStore.IsFavorite(_coordinate, _seed))
+                                        SeedStore.SaveSingleFavoritePreview(_coordinate, _seed, generated);
+                                    MapPreviewData cap = generated;
+                                    int dc = doneCount;
+                                    SetUi(() =>
+                                    {
+                                        if (_pbExportAll != null) _pbExportAll.Value = Math.Min(_pbExportAll.Maximum, dc);
+                                        if (_curData == null && pi == curSelWorldIdx) ShowPreviewData(cap);
+                                        if (_onPreviewReady != null) _onPreviewReady(cap);
+                                    });
+                                }
+                                else
+                                {
+                                    failedCount++;
+                                    if (!string.IsNullOrEmpty(err)) lastErr = err;
+                                }
                             }
                         }
 

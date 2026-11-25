@@ -106,7 +106,7 @@ namespace ONITrainer
             grpAdv.Controls.Add(new Label
             {
                 Text = "开启：解锁主界面「07 高级功能」面板（极速建造挖掘/生存状态锁/格子控温与抽真空/\r\n" +
-                       "  复制人属性与负面特质编辑）、种子二次条件筛选及纯元素/温度/PNG 导出。",
+                       "  复制人与间歇泉火山编辑）、多进程高级种子筛选及纯元素/温度图层。",
                 ForeColor = C(0xBFD8CF),
                 Font = _fontReg,
                 Location = new Point(18, 70),
